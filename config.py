@@ -16,6 +16,11 @@ class ChallengeConfig:
     epochs: int = 50
     seed: int = 42
     num_workers: int = 4
+    crops_per_image: int = 4
+    base_channels: int = 32
+    tile_size: int = 512
+    tile_overlap: int = 64
+    val_subset: int = 100
     # Per-image percentile normalization, applied to inputs and targets
     p_low: float = 1.0
     p_high: float = 99.5

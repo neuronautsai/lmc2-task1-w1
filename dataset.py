@@ -3,13 +3,14 @@
 Normalization rule (declared): every image is scaled on its own by the 1st and 99.5th percentile and clipped to [0, 1].
 The input rule uses only the input image, so it also works at inference.
 Targets are normalized the same way, so models predict normalized fluorescence and absolute intensity is not evaluated.
+Training items hold crops_per_image random crops of one image (shape K, C, P, P), evaluation items hold the full image.
 Missing channels get a finite placeholder (zeros) and observed=False, they must be excluded from the loss.
 """
 import numpy as np
 import pandas as pd
 import tifffile
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, get_worker_info
 
 from config import ORGANELLES, ChallengeConfig
 
@@ -19,7 +20,7 @@ def normalize(a, p_low, p_high):
     lo, hi = np.percentile(a, [p_low, p_high])
     if hi <= lo:
         return np.zeros_like(a)
-    return np.clip((a - lo) / (hi - lo), 0.0, 1.0)
+    return np.clip((a - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
 
 
 def load_pairs(cfg, split):
@@ -34,7 +35,22 @@ class LMC2Dataset(Dataset):
         self.cfg = cfg
         self.train = train
         self.df = load_pairs(cfg, split)
-        self.rng = np.random.default_rng(seed)
+        self.seed = seed
+        self.epoch = 0
+        self._rng = None
+        self._rng_key = None
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+
+    @property
+    def rng(self):
+        info = get_worker_info()
+        key = (self.epoch, info.id if info else -1)
+        if self._rng is None or self._rng_key != key:
+            self._rng = np.random.default_rng(self.seed + 1000 * self.epoch + (info.id if info else 0))
+            self._rng_key = key
+        return self._rng
 
     def __len__(self):
         return len(self.df)
@@ -73,7 +89,9 @@ class LMC2Dataset(Dataset):
                 y[k] = t
                 observed[k] = True
         if self.train:
-            x, y = self._augment(x, y)
+            crops = [self._augment(x, y) for _ in range(self.cfg.crops_per_image)]
+            x = np.stack([c[0] for c in crops])
+            y = np.stack([c[1] for c in crops])
         return {
             "input": torch.from_numpy(np.ascontiguousarray(x)),
             "target": torch.from_numpy(np.ascontiguousarray(y)),
