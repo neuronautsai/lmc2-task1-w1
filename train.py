@@ -60,6 +60,7 @@ def main():
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--val-subset", type=int, default=None)
     ap.add_argument("--lr", type=float, default=None)
+    ap.add_argument("--resume", action="store_true", help="continue from OUT/last.pt if it exists")
     a = ap.parse_args()
 
     over = {k: v for k, v in dict(
@@ -96,11 +97,20 @@ def main():
     print("parameters:", sum(p.numel() for p in model.parameters()))
     K = cfg.crops_per_image
     history, best, best_epoch = [], -1.0, -1
+    start_epoch, elapsed_before = 0, 0.0
+    last_path = out / "last.pt"
+    if a.resume and last_path.exists():
+        ck = torch.load(last_path, map_location=device)
+        model.load_state_dict(ck["model"])
+        opt.load_state_dict(ck["opt"])
+        start_epoch, history = ck["epoch"], ck["history"]
+        best, best_epoch, elapsed_before = ck["best"], ck["best_epoch"], ck["elapsed"]
+        print(f"resumed from epoch {start_epoch}, best epoch {best_epoch} ({best:.4f})")
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats()
-    t_start = time.time()
+    t_start = time.time() - elapsed_before
 
-    for epoch in range(cfg.epochs):
+    for epoch in range(start_epoch, cfg.epochs):
         train_ds.set_epoch(epoch)
         model.train()
         losses = []
@@ -122,10 +132,12 @@ def main():
         history.append(row)
         pd.DataFrame(history).to_csv(out / "history.csv", index=False)
         print({k: round(v, 4) for k, v in row.items()})
-        torch.save({"model": model.state_dict(), "epoch": epoch + 1, "cfg": cfg_dict}, out / "last.pt")
         if m_ssim > best:
             best, best_epoch = m_ssim, epoch + 1
             torch.save({"model": model.state_dict(), "epoch": epoch + 1, "cfg": cfg_dict}, out / "best.pt")
+        torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "epoch": epoch + 1, "cfg": cfg_dict,
+                    "history": json.loads(json.dumps(history, default=float)), "best": float(best), "best_epoch": best_epoch, "elapsed": row["elapsed_s"]},
+                   last_path)
     train_time = time.time() - t_start
 
     ckpt = torch.load(out / "best.pt", map_location=device)
