@@ -49,22 +49,23 @@ def grids(run, device):
         d = scores[scores.organelle == org].sort_values("ssim").reset_index(drop=True)
         picks = [("lowest SSIM", d.iloc[0]), ("median SSIM", d.iloc[(d.ssim - d.ssim.median()).abs().argmin()]),
                  ("highest SSIM", d.iloc[-1])]
-        fig, ax = plt.subplots(3, 4, figsize=(14, 10.5))
+        fig, ax = plt.subplots(3, 4, figsize=(12, 9), constrained_layout=True)
         for r, (label, row) in enumerate(picks):
             item = ds[pos[int(row.image_id)]]
             pred = predict_full(model, item["input"][None].to(device), cfg.tile_size, cfg.tile_overlap)[k]
             gt = item["target"][k].numpy()
             err = np.abs(pred - gt)
-            panels = [(item["input"][0].numpy(), "Input (transmitted)"), (gt, f"Ground truth {org}"),
+            panels = [(item["input"][0].numpy(), None), (gt, f"Ground truth {org}"),
                       (np.clip(pred, 0, 1), "Prediction"), (err, "Absolute error")]
             for c, (img, title) in enumerate(panels):
                 ax[r, c].imshow(img, cmap="gray" if c < 3 else "magma", vmin=0, vmax=1)
                 ax[r, c].axis("off")
-                ax[r, c].set_title(title, fontsize=9)
-            ax[r, 0].text(0, -0.12, f"{label} | study {row.study} | {row.modality} | image {int(row.image_id)} | "
-                          f"SSIM {row.ssim:.3f} | PCC {row.pcc:.3f}", transform=ax[r, 0].transAxes, fontsize=9)
-        fig.tight_layout()
-        fig.savefig(run / f"grid_{org}.png", dpi=110)
+                if title:
+                    ax[r, c].set_title(title, fontsize=9)
+            ax[r, 0].set_ylabel("")
+            ax[r, 0].set_title(f"{label} | study {row.study} | {row.modality} | image {int(row.image_id)}\n"
+                               f"SSIM {row.ssim:.3f} | PCC {row.pcc:.3f}\nInput (transmitted)", fontsize=8)
+        fig.savefig(run / f"grid_{org}.png", dpi=120)
         plt.close(fig)
 
 
