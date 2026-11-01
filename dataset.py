@@ -5,6 +5,8 @@ The input rule uses only the input image, so it also works at inference.
 Targets are normalized the same way, so models predict normalized fluorescence and absolute intensity is not evaluated.
 Training items hold crops_per_image random crops of one image (shape K, C, P, P), evaluation items hold the full image.
 Missing channels get a finite placeholder (zeros) and observed=False, they must be excluded from the loss.
+With cfg.prepared_dir set, items come from the arrays written by prepare_dataset.py (float16, already normalized,
+channel 0 input and channels 1 to 4 targets) and training crops are read from memory-mapped files.
 """
 import numpy as np
 import pandas as pd
@@ -70,6 +72,9 @@ class LMC2Dataset(Dataset):
         i = int(self.rng.integers(0, h - size + 1))
         j = int(self.rng.integers(0, w - size + 1))
         x, y = x[:, i:i + size, j:j + size], y[:, i:i + size, j:j + size]
+        return self._flip_rotate(x, y)
+
+    def _flip_rotate(self, x, y):
         if self.rng.random() < 0.5:
             x, y = x[:, :, ::-1], y[:, :, ::-1]
         if self.rng.random() < 0.5:
@@ -77,8 +82,41 @@ class LMC2Dataset(Dataset):
         k = int(self.rng.integers(0, 4))
         return np.rot90(x, k, axes=(1, 2)).copy(), np.rot90(y, k, axes=(1, 2)).copy()
 
+    def _augment_prepared(self, arr):
+        """Same random draws as _augment, but only the crop is read from the memory-mapped array."""
+        size = self.cfg.patch_size
+        h, w = arr.shape[-2:]
+        if h < size or w < size:
+            return self._augment(arr[:1].astype(np.float32), arr[1:].astype(np.float32))
+        i = int(self.rng.integers(0, h - size + 1))
+        j = int(self.rng.integers(0, w - size + 1))
+        crop = np.asarray(arr[:, i:i + size, j:j + size], dtype=np.float32)
+        return self._flip_rotate(crop[:1], crop[1:])
+
+    def _prepared_item(self, r):
+        arr = np.load(self.cfg.prepared_dir / f"{int(r.study):02d}_{int(r.image_id):05d}.npy", mmap_mode="r")
+        assert arr.ndim == 3 and arr.shape[0] == 1 + len(ORGANELLES), f"bad prepared array {arr.shape}"
+        observed = np.array([bool(r[f"{o}_obs"]) for o in ORGANELLES])
+        if self.train:
+            crops = [self._augment_prepared(arr) for _ in range(self.cfg.crops_per_image)]
+            x = np.stack([c[0] for c in crops])
+            y = np.stack([c[1] for c in crops])
+        else:
+            x, y = arr[:1].astype(np.float32), arr[1:].astype(np.float32)
+        return x, y, observed
+
     def __getitem__(self, idx):
         r = self.df.iloc[idx]
+        if self.cfg.prepared_dir is not None:
+            x, y, observed = self._prepared_item(r)
+            return {
+                "input": torch.from_numpy(np.ascontiguousarray(x)),
+                "target": torch.from_numpy(np.ascontiguousarray(y)),
+                "observed": torch.from_numpy(observed),
+                "study": int(r.study),
+                "image_id": int(r.image_id),
+                "modality": r.modality,
+            }
         x = self._read(int(r.study), r.in_file)[None]
         y = np.zeros((len(ORGANELLES),) + x.shape[1:], dtype=np.float32)
         observed = np.zeros(len(ORGANELLES), dtype=bool)

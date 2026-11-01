@@ -10,6 +10,7 @@ class ChallengeConfig:
     data_root: Path = Path("/content/drive/MyDrive/LMC2/task1")
     pairs_csv: Path = Path("/content/drive/MyDrive/LMC2/task1/pairs.csv")
     output_dir: Path = Path("/content/drive/MyDrive/LMC2/outputs")
+    prepared_dir: Path | None = None  # local folder with prepare_dataset.py output, None reads raw TIFFs
     patch_size: int = 256
     batch_size: int = 4
     learning_rate: float = 1e-4

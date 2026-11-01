@@ -60,6 +60,7 @@ def main():
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--val-subset", type=int, default=None)
     ap.add_argument("--lr", type=float, default=None)
+    ap.add_argument("--prepared-dir", default=None, help="folder written by prepare_dataset.py (default: raw TIFFs)")
     ap.add_argument("--resume", action="store_true", help="continue from OUT/last.pt if it exists")
     a = ap.parse_args()
 
@@ -67,6 +68,7 @@ def main():
         seed=a.seed, epochs=a.epochs, patch_size=a.patch_size, base_channels=a.base_channels,
         num_workers=a.workers, val_subset=a.val_subset, learning_rate=a.lr,
         data_root=Path(a.data_root) if a.data_root else None,
+        prepared_dir=Path(a.prepared_dir) if a.prepared_dir else None,
         pairs_csv=Path(a.pairs_csv) if a.pairs_csv else None).items() if v is not None}
     cfg = dataclasses.replace(ChallengeConfig(), **over)
     out = Path(a.out)
