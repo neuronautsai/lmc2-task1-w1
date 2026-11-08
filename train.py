@@ -8,6 +8,7 @@ Usage: python train.py --out OUTPUT_DIR [--seed 42] [--epochs 50] [--overfit-n 8
 """
 import argparse
 import dataclasses
+import math
 import json
 import os
 import random
@@ -20,7 +21,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from config import ChallengeConfig
+from config import UNKNOWN_MODALITY, MODALITIES, ChallengeConfig
 from dataset import LMC2Dataset
 from evaluate import breakdown, summarize
 from predict import evaluate_model
@@ -60,6 +61,9 @@ def main():
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--val-subset", type=int, default=None)
     ap.add_argument("--lr", type=float, default=None)
+    ap.add_argument("--lr-schedule", choices=["const", "cosine"], default=None)
+    ap.add_argument("--modality", choices=["none", "film"], default=None, help="modality-aware conditioning")
+    ap.add_argument("--modality-dropout", type=float, default=None)
     ap.add_argument("--prepared-dir", default=None, help="folder written by prepare_dataset.py (default: raw TIFFs)")
     ap.add_argument("--resume", action="store_true", help="continue from OUT/last.pt if it exists")
     a = ap.parse_args()
@@ -67,6 +71,7 @@ def main():
     over = {k: v for k, v in dict(
         seed=a.seed, epochs=a.epochs, patch_size=a.patch_size, base_channels=a.base_channels,
         num_workers=a.workers, val_subset=a.val_subset, learning_rate=a.lr,
+        lr_schedule=a.lr_schedule, modality_mode=a.modality, modality_dropout=a.modality_dropout,
         data_root=Path(a.data_root) if a.data_root else None,
         prepared_dir=Path(a.prepared_dir) if a.prepared_dir else None,
         pairs_csv=Path(a.pairs_csv) if a.pairs_csv else None).items() if v is not None}
@@ -94,7 +99,8 @@ def main():
     loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, num_workers=cfg.num_workers,
                         drop_last=len(train_ds) >= cfg.batch_size,
                         generator=torch.Generator().manual_seed(cfg.seed))
-    model = UNet(base=cfg.base_channels).to(device)
+    n_mod = (len(MODALITIES) + 1) if cfg.modality_mode == "film" else 0
+    model = UNet(base=cfg.base_channels, n_mod=n_mod).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate)
     print("parameters:", sum(p.numel() for p in model.parameters()))
     K = cfg.crops_per_image
@@ -112,7 +118,12 @@ def main():
         torch.cuda.reset_peak_memory_stats()
     t_start = time.time() - elapsed_before
 
+    mod_rng = np.random.default_rng(cfg.seed + 7)
     for epoch in range(start_epoch, cfg.epochs):
+        if cfg.lr_schedule == "cosine":
+            factor = cfg.lr_min_factor + (1 - cfg.lr_min_factor) * 0.5 * (1 + math.cos(math.pi * epoch / cfg.epochs))
+            for g in opt.param_groups:
+                g["lr"] = cfg.learning_rate * factor
         train_ds.set_epoch(epoch)
         model.train()
         losses = []
@@ -120,8 +131,13 @@ def main():
             x = batch["input"].flatten(0, 1).to(device, non_blocking=True)
             y = batch["target"].flatten(0, 1).to(device, non_blocking=True)
             obs = batch["observed"].repeat_interleave(K, dim=0).to(device)
+            mod = None
+            if n_mod:
+                ids = batch["modality_id"].numpy().copy()
+                ids[mod_rng.random(len(ids)) < cfg.modality_dropout] = UNKNOWN_MODALITY
+                mod = torch.from_numpy(ids).repeat_interleave(K).to(device)
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp):
-                pred = model(x)
+                pred = model(x) if mod is None else model(x, mod)
             loss = observed_channel_l1(pred, y, obs)
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -129,7 +145,7 @@ def main():
             losses.append(loss.item())
         df, _ = evaluate_model(model, val_ds, cfg, device, val_idx)
         m_ssim, m_pcc, _ = macro(df)
-        row = {"epoch": epoch + 1, "train_loss": float(np.mean(losses)), "val_macro_ssim": m_ssim,
+        row = {"epoch": epoch + 1, "lr": opt.param_groups[0]["lr"], "train_loss": float(np.mean(losses)), "val_macro_ssim": m_ssim,
                "val_macro_pcc": m_pcc, "elapsed_s": time.time() - t_start}
         history.append(row)
         pd.DataFrame(history).to_csv(out / "history.csv", index=False)
@@ -148,13 +164,19 @@ def main():
     df, sec_per_image = evaluate_model(model, val_ds, cfg, device, full_idx)
     df.to_csv(out / "per_image_scores.csv", index=False)
     m_ssim, m_pcc, table = macro(df)
+    unk = {}
+    if n_mod:  # same checkpoint with the modality label withheld, to measure how much the label is used
+        df_u, _ = evaluate_model(model, val_ds, cfg, device, full_idx, label="unknown")
+        df_u.to_csv(out / "per_image_scores_unknown_modality.csv", index=False)
+        u_ssim, u_pcc, _ = macro(df_u)
+        unk = {"macro_ssim_unknown_modality": u_ssim, "macro_pcc_unknown_modality": u_pcc}
     table.to_csv(out / "summary.csv", index=False)
     breakdown(df, "modality").to_csv(out / "by_modality.csv", index=False)
     breakdown(df, "study").to_csv(out / "by_study.csv", index=False)
     info = {"best_epoch": best_epoch, "train_seconds": train_time, "inference_seconds_per_image": sec_per_image,
             "peak_gpu_memory_gb": (torch.cuda.max_memory_allocated() / 1e9) if device.type == "cuda" else None,
             "macro_ssim": m_ssim, "macro_pcc": m_pcc, "config": cfg_dict,
-            "overfit_n": a.overfit_n}
+            "overfit_n": a.overfit_n, **unk}
     json.dump(info, open(out / "run_info.json", "w"), indent=2, default=str)
     print(table.to_string(index=False))
     print({k: info[k] for k in ("best_epoch", "train_seconds", "inference_seconds_per_image", "peak_gpu_memory_gb",

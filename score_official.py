@@ -17,7 +17,7 @@ import pandas as pd
 import tifffile
 import torch
 
-from config import ORGANELLES, ChallengeConfig
+from config import MODALITIES, ORGANELLES, ChallengeConfig
 from dataset import LMC2Dataset
 from evaluate import score_image
 from official_metrics import METRIC_COLUMNS, official_metrics
@@ -53,6 +53,7 @@ def main():
     ap.add_argument("--subset", type=int, default=0, help="score only the first N validation images (0 = all)")
     ap.add_argument("--data-root", default=None)
     ap.add_argument("--pairs-csv", default=None)
+    ap.add_argument("--modality-label", choices=["true", "unknown"], default="true", help="for a modality-conditioned model")
     ap.add_argument("--resume", action="store_true", help="continue from partial_rows.csv in --out")
     a = ap.parse_args()
     kw = {}
@@ -63,7 +64,8 @@ def main():
     cfg = ChallengeConfig(**kw)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ck = torch.load(a.checkpoint, map_location=device)
-    model = UNet(base=int(ck["cfg"]["base_channels"])).to(device)
+    n_mod = (len(MODALITIES) + 1) if ck["cfg"].get("modality_mode") == "film" else 0
+    model = UNet(base=int(ck["cfg"]["base_channels"]), n_mod=n_mod).to(device)
     model.load_state_dict(ck["model"])
     model.eval()
     ds = LMC2Dataset(cfg, "val", train=False)
@@ -84,7 +86,10 @@ def main():
         if (int(r.study), int(r.image_id)) in done:
             continue
         item = retry(lambda: ds[idx])
-        pred = predict_full(model, item["input"][None].to(device), cfg.tile_size, cfg.tile_overlap)
+        mod = None
+        if n_mod:
+            mod = item["modality_id"] if a.modality_label == "true" else n_mod - 1
+        pred = predict_full(model, item["input"][None].to(device), cfg.tile_size, cfg.tile_overlap, mod=mod)
         obs = item["observed"].numpy()
         proxy = {x["organelle"]: x for x in score_image(pred, item["target"].numpy(), obs)}
         for k, organelle in enumerate(ORGANELLES):
@@ -118,7 +123,7 @@ def main():
     macro = {c: float(df.groupby("organelle")[c].mean().reindex(ORGANELLES).mean()) for c in cols}
     undefined = {c: int(df[c].isna().sum()) for c in cols}
     inv = invariance_check(raw_keep, pred_keep, 5)
-    info = {"checkpoint": a.checkpoint, "epoch": ck.get("epoch"), "n_images": len(idxs), "n_rows": len(df),
+    info = {"checkpoint": a.checkpoint, "modality_label": a.modality_label if n_mod else "not used", "epoch": ck.get("epoch"), "n_images": len(idxs), "n_rows": len(df),
             "macro_over_organelles": macro, "undefined_counts": undefined,
             "max_abs_change_under_affine_rescaling_of_prediction": inv,
             "assumptions": "SSIM data_range (1.0 or joint range), window and K1/K2 unpublished. "

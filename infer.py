@@ -13,7 +13,7 @@ import numpy as np
 import tifffile
 import torch
 
-from config import ChallengeConfig
+from config import MODALITIES, ChallengeConfig
 from dataset import normalize
 from predict import predict_full
 from unet import UNet
@@ -28,7 +28,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ck = torch.load(a.checkpoint, map_location=device)
     cfg = ChallengeConfig()
-    model = UNet(base=int(ck["cfg"]["base_channels"])).to(device)
+    n_mod = (len(MODALITIES) + 1) if ck["cfg"].get("modality_mode") == "film" else 0
+    model = UNet(base=int(ck["cfg"]["base_channels"]), n_mod=n_mod).to(device)
     model.load_state_dict(ck["model"])
     model.eval()
     raw = tifffile.imread(a.input).astype(np.float32)

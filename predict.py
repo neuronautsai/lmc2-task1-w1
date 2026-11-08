@@ -23,8 +23,10 @@ def _window(n, overlap):
 
 
 @torch.no_grad()
-def predict_full(model, x, tile=512, overlap=64, factor=16):
-    """x: (1, 1, H, W) tensor on the model device. Returns (4, H, W) float32 numpy array in [0, 1]."""
+def predict_full(model, x, tile=512, overlap=64, factor=16, mod=None):
+    """x: (1, 1, H, W) tensor on the model device, mod: optional modality id (int) for a conditioned model.
+    Returns (4, H, W) float32 numpy array in [0, 1]."""
+    mod_t = None if mod is None else torch.tensor([int(mod)], dtype=torch.long, device=x.device)
     _, _, h, w = x.shape
     ph, pw = (-h) % factor, (-w) % factor
     if ph or pw:
@@ -46,21 +48,25 @@ def predict_full(model, x, tile=512, overlap=64, factor=16):
             wy = torch.from_numpy(_window(th, min(overlap, th // 2))).to(x.device)
             wx = torch.from_numpy(_window(tw, min(overlap, tw // 2))).to(x.device)
             weight = (wy[:, None] * wx[None, :])[None]
-            pred = model(patch)[0].float()
+            pred = (model(patch) if mod_t is None else model(patch, mod_t))[0].float()
             out[:, i:i + th, j:j + tw] += pred * weight
             acc[:, i:i + th, j:j + tw] += weight
     return (out / acc)[:, :h, :w].cpu().numpy()
 
 
-def evaluate_model(model, dataset, cfg, device, indices=None):
-    """Score full validation images. Returns (per image-channel DataFrame, seconds per image)."""
+def evaluate_model(model, dataset, cfg, device, indices=None, label="true"):
+    """Score full validation images. Returns (per image-channel DataFrame, seconds per image).
+    label: "true" gives a conditioned model the real modality, "unknown" withholds it. Ignored by an unconditioned model."""
     model.eval()
     rows, t_inf, n = [], 0.0, 0
     for idx in (range(len(dataset)) if indices is None else indices):
         item = dataset[idx]
         x = item["input"][None].to(device)
         t0 = time.time()
-        pred = predict_full(model, x, cfg.tile_size, cfg.tile_overlap)
+        mod = None
+        if getattr(model, "n_mod", 0):
+            mod = item["modality_id"] if label == "true" else model.n_mod - 1
+        pred = predict_full(model, x, cfg.tile_size, cfg.tile_overlap, mod=mod)
         if device.type == "cuda":
             torch.cuda.synchronize()
         t_inf += time.time() - t0

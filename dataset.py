@@ -14,7 +14,7 @@ import tifffile
 import torch
 from torch.utils.data import Dataset, get_worker_info
 
-from config import ORGANELLES, ChallengeConfig
+from config import ORGANELLES, ChallengeConfig, modality_id
 
 
 def normalize(a, p_low, p_high):
@@ -116,6 +116,7 @@ class LMC2Dataset(Dataset):
                 "study": int(r.study),
                 "image_id": int(r.image_id),
                 "modality": r.modality,
+                "modality_id": modality_id(r.modality),
             }
         x = self._read(int(r.study), r.in_file)[None]
         y = np.zeros((len(ORGANELLES),) + x.shape[1:], dtype=np.float32)
@@ -137,4 +138,5 @@ class LMC2Dataset(Dataset):
             "study": int(r.study),
             "image_id": int(r.image_id),
             "modality": r.modality,
+            "modality_id": modality_id(r.modality),
         }
