@@ -9,6 +9,7 @@ Week 2 summary.csv. Official-style columns are described in official_metrics.py 
 """
 import argparse
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +23,18 @@ from evaluate import score_image
 from official_metrics import METRIC_COLUMNS, official_metrics
 from predict import predict_full
 from unet import UNet
+
+
+def retry(fn, tries=6, wait=5.0):
+    """Drive mounts sometimes raise OSError (Errno 5) on a read. Retry with a growing pause before giving up."""
+    for k in range(tries):
+        try:
+            return fn()
+        except OSError as e:
+            if k == tries - 1:
+                raise
+            print(f"read failed ({e}), retry {k + 1}/{tries - 1}", flush=True)
+            time.sleep(wait * (k + 1))
 
 
 def invariance_check(raw, pred, n_images):
@@ -40,6 +53,7 @@ def main():
     ap.add_argument("--subset", type=int, default=0, help="score only the first N validation images (0 = all)")
     ap.add_argument("--data-root", default=None)
     ap.add_argument("--pairs-csv", default=None)
+    ap.add_argument("--resume", action="store_true", help="continue from partial_rows.csv in --out")
     a = ap.parse_args()
     kw = {}
     if a.data_root:
@@ -58,15 +72,26 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     rows, raw_keep, pred_keep = [], [], []
+    partial = out / "partial_rows.csv"
+    done = set()
+    if a.resume and partial.exists():
+        prev = pd.read_csv(partial)
+        rows = prev.to_dict("records")
+        done = set(zip(prev.study, prev.image_id))
+        print(f"resuming with {len(done)} images already scored", flush=True)
     for n, idx in enumerate(idxs):
-        item, r = ds[idx], ds.df.iloc[idx]
+        r = ds.df.iloc[idx]
+        if (int(r.study), int(r.image_id)) in done:
+            continue
+        item = retry(lambda: ds[idx])
         pred = predict_full(model, item["input"][None].to(device), cfg.tile_size, cfg.tile_overlap)
         obs = item["observed"].numpy()
         proxy = {x["organelle"]: x for x in score_image(pred, item["target"].numpy(), obs)}
         for k, organelle in enumerate(ORGANELLES):
             if not obs[k]:
                 continue
-            raw = tifffile.imread(cfg.data_root / f"Study_{int(r.study):02d}" / r[f"{organelle}_file"]).astype(np.float64)
+            path = cfg.data_root / f"Study_{int(r.study):02d}" / r[f"{organelle}_file"]
+            raw = retry(lambda: tifffile.imread(path)).astype(np.float64)
             assert raw.shape == pred[k].shape, f"shape mismatch {r.study} {r.image_id} {organelle}"
             row = {"study": int(r.study), "image_id": int(r.image_id), "modality": r.modality, "organelle": organelle,
                    "proxy_ssim": proxy[organelle]["ssim"], "proxy_pcc": proxy[organelle]["pcc"]}
@@ -76,6 +101,7 @@ def main():
                 raw_keep.append(raw)
                 pred_keep.append(pred[k].astype(np.float64))
         if (n + 1) % 50 == 0:
+            pd.DataFrame(rows).to_csv(partial, index=False)
             print(f"{n + 1}/{len(idxs)} images", flush=True)
 
     df = pd.DataFrame(rows)
