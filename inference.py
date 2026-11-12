@@ -76,9 +76,11 @@ def to_uint8(pred):
 
 
 def save_image(path, array, ome):
-    # Same call as the organizers' template inference.py
+    # Same call as the organizers' template inference.py, except that the OME-XML is passed as UTF-8 bytes:
+    # the challenge files contain non-ASCII units (the micro sign in "µm"), and tifffile rejects a str description
+    # that is not 7-bit ASCII.
     pixels = xmltodict.parse(ome)["OME"]["Image"]["Pixels"]
-    tifffile.imwrite(path, array, description=ome,
+    tifffile.imwrite(path, array, description=ome.encode("utf-8"),
                      resolution=(float(pixels["@PhysicalSizeX"]), float(pixels["@PhysicalSizeY"])),
                      metadata=pixels, tile=(128, 128))
 

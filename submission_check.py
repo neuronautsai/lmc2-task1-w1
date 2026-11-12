@@ -29,7 +29,8 @@ def make_inputs(input_root, model_dir):
     for name, modality, dtype, shape in CASES:
         img = rng.integers(0, np.iinfo(dtype).max, size=shape).astype(dtype)
         tifffile.imwrite(d / name, img, ome=True, metadata={
-            "axes": "YX", "PhysicalSizeX": 0.1625, "PhysicalSizeY": 0.1625, "Channel": {"Name": modality}})
+            "axes": "YX", "PhysicalSizeX": 0.1625, "PhysicalSizeXUnit": "\u00b5m", "PhysicalSizeY": 0.1625,
+            "PhysicalSizeYUnit": "\u00b5m", "Channel": {"Name": modality}})  # non-ASCII unit as in the challenge files
     import torch
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from unet import UNet
