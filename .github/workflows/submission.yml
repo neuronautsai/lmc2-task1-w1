@@ -1,0 +1,30 @@
+name: submission container
+
+on:
+  push:
+    paths: [Dockerfile, requirements-submission.txt, inference.py, ome_utils.py, submission_check.py, config.py, dataset.py, evaluate.py, predict.py, unet.py, .github/workflows/submission.yml]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --platform linux/amd64 -t lmc2-task1 .
+      - name: Synthetic inputs and random weights (file contract only, not prediction quality)
+        run: |
+          mkdir -p ci/input ci/model ci/output && chmod -R a+rwx ci
+          docker run --rm --entrypoint python -v "$PWD":/w -w /w lmc2-task1 submission_check.py make-inputs ci/input ci/model
+      - name: Run the container offline, as on Grand Challenge
+        run: |
+          docker run --rm --network none --memory 16g \
+            -v "$PWD/ci/input":/input:ro -v "$PWD/ci/output":/output -v "$PWD/ci/model":/opt/ml/model:ro \
+            lmc2-task1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check outputs and read them with panimg
+        run: |
+          pip install -q panimg pyvips-binary tifffile numpy
+          python submission_check.py check-outputs ci/input ci/output
