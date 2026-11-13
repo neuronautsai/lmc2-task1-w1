@@ -14,11 +14,10 @@ jobs:
         run: docker build --platform linux/amd64 -t lmc2-task1 .
       - name: Synthetic inputs and random weights (file contract only, not prediction quality)
         run: |
-          mkdir -p ci/input ci/model ci/output && chmod -R a+rwx ci
+          mkdir -p ci/input ci/model ci/output ci/output_uint8 && chmod -R a+rwx ci
           docker run --rm --entrypoint python -v "$PWD":/w -w /w lmc2-task1 submission_check.py make-inputs ci/input ci/model
       - name: Run the container offline, as on Grand Challenge (image default output mode, then uint8)
         run: |
-          mkdir -p ci/output_uint8 && chmod -R a+rwx ci
           docker run --rm --network none --memory 16g \
             -v "$PWD/ci/input":/input:ro -v "$PWD/ci/output":/output -v "$PWD/ci/model":/opt/ml/model:ro \
             lmc2-task1
