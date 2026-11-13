@@ -12,6 +12,9 @@ WORKDIR /opt/app
 COPY --chown=user:user requirements-submission.txt /opt/app/
 RUN python -m pip install --user --no-cache-dir --no-color --requirement /opt/app/requirements-submission.txt
 
-COPY --chown=user:user config.py dataset.py evaluate.py predict.py unet.py ome_utils.py inference.py /opt/app/
+COPY --chown=user:user config.py dataset.py evaluate.py predict.py unet.py ome_utils.py inference.py output_scale.json /opt/app/
+
+# Output mode: float32 writes predictions on a typical raw target scale (see inference.py), uint8 is the v0.1.0 behaviour.
+ENV LMC2_OUTPUT_MODE=float32
 
 ENTRYPOINT ["python", "inference.py"]

@@ -1,0 +1,7 @@
+{
+  "source": "compare_output_scale.py (commit 9c6cb36), target_stats.json: medians of the raw target p2 and p99.8 over 300 random training images per organelle (seed 0), values as printed (rounded to 0.1)",
+  "Nucleus": {"lo": 115.0, "hi": 934.0},
+  "Mitochondria": {"lo": 106.0, "hi": 1386.5},
+  "Tubulin": {"lo": 379.5, "hi": 4741.5},
+  "Actin": {"lo": 604.0, "hi": 10888.4}
+}

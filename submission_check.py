@@ -4,6 +4,7 @@
   python submission_check.py check-outputs INPUT_ROOT OUTPUT_ROOT  verify the four outputs per input, then panimg
 
 The synthetic inputs test the file contract only (names, folders, shape, dtype, OME-XML, panimg readability).
+Accepted output types: uint8 and float32 (inference.py LMC2_OUTPUT_MODE), the same type for every output.
 They say nothing about prediction quality.
 """
 import subprocess
@@ -13,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-from ome_utils import ome_as_uint8
+from ome_utils import OUTPUT_TYPES, ome_with_type
 
 ORGANELLES = ("nucleus", "mitochondria", "tubulin", "actin")
 INPUT_SUB = Path("images") / "organelles-transmitted-light-ome-tiff"
@@ -41,9 +42,19 @@ def make_inputs(input_root, model_dir):
     print(f"wrote {len(CASES)} inputs to {d} and random weights to {model_dir}")
 
 
+def run_panimg(output_root, previews):
+    code = ("import sys, tempfile; from pathlib import Path; from panimg import convert\n"
+            "with tempfile.TemporaryDirectory() as t:\n"
+            "    kw = {} if sys.argv[2] == '1' else {'post_processors': []}\n"
+            "    r = convert(input_directory=Path(sys.argv[1]), output_directory=Path(t), **kw)\n"
+            "    print(len(r.new_images), sum(f.image_type.value == 'DZI' for f in r.new_image_files))")
+    return subprocess.run([sys.executable, "-c", code, str(Path(output_root) / "images"), "1" if previews else "0"],
+                          capture_output=True, text=True)
+
+
 def check_outputs(input_root, output_root):
     inputs = sorted((Path(input_root) / INPUT_SUB).iterdir())
-    errors = []
+    errors, warnings, modes = [], [], set()
     for inp in inputs:
         with tifffile.TiffFile(inp) as t:
             src, src_ome = np.squeeze(t.asarray()), t.ome_metadata
@@ -56,21 +67,30 @@ def check_outputs(input_root, output_root):
                 arr, ome = t.asarray(), t.ome_metadata
             if arr.shape != src.shape:
                 errors.append(f"{out.name} {org}: shape {arr.shape} != input {src.shape}")
-            if arr.dtype != np.uint8:
-                errors.append(f"{out.name} {org}: dtype {arr.dtype}, expected uint8")
-            if 'Type="uint8"' not in ome or ome_as_uint8(src_ome) != ome:
-                errors.append(f"{out.name} {org}: OME-XML is not the input OME-XML with Type uint8")
+            mode = next((m for m, (dt, _, _) in OUTPUT_TYPES.items() if arr.dtype == np.dtype(dt)), None)
+            if mode is None:
+                errors.append(f"{out.name} {org}: dtype {arr.dtype}, expected one of {sorted(OUTPUT_TYPES)}")
+                continue
+            modes.add(mode)
+            if ome_with_type(src_ome, *OUTPUT_TYPES[mode][1:]) != ome:
+                errors.append(f"{out.name} {org}: OME-XML is not the input OME-XML with the pixel type of {mode}")
+            if not np.isfinite(arr).all():
+                errors.append(f"{out.name} {org}: non-finite values")
             if arr.min() == arr.max():
                 errors.append(f"{out.name} {org}: constant image")
     n_out = sum(1 for _ in (Path(output_root) / "images").rglob("*.tiff"))
     if n_out != 4 * len(inputs):
         errors.append(f"expected {4 * len(inputs)} output files, found {n_out}")
-    # panimg with its default post-processors (DZI preview), in a subprocess so that a libvips abort is caught
-    code = ("import sys, tempfile; from pathlib import Path; from panimg import convert\n"
-            "with tempfile.TemporaryDirectory() as t:\n"
-            "    r = convert(input_directory=Path(sys.argv[1]), output_directory=Path(t))\n"
-            "    print(len(r.new_images), sum(f.image_type.value == 'DZI' for f in r.new_image_files))")
-    p = subprocess.run([sys.executable, "-c", code, str(Path(output_root) / "images")], capture_output=True, text=True)
+    if len(modes) > 1:
+        errors.append(f"mixed output types {sorted(modes)}")
+    # panimg with its default post-processors (DZI preview), in a subprocess so that a libvips abort is caught.
+    # For non-uint8 outputs a local libvips may abort in the preview step: then the read is repeated without
+    # post-processors and the preview failure is reported as a warning, to be checked on Grand Challenge itself.
+    p = run_panimg(output_root, previews=True)
+    if p.returncode != 0 and modes and modes != {"uint8"}:
+        warnings.append(f"panimg DZI preview failed locally for {sorted(modes)} outputs (exit {p.returncode}): "
+                        f"{p.stderr.strip().splitlines()[-1:]}. Check on Grand Challenge before submitting.")
+        p = run_panimg(output_root, previews=False)
     if p.returncode != 0:
         errors.append(f"panimg process failed (exit {p.returncode}): {p.stderr.strip().splitlines()[-1:]}")
     else:
@@ -78,10 +98,13 @@ def check_outputs(input_root, output_root):
         if n_img != n_out:
             errors.append(f"panimg read {n_img} of {n_out} outputs")
         print(f"panimg: {n_img} images, {n_dzi} DZI previews")
+    for w in warnings:
+        print("WARNING: " + w)
     if errors:
         print("FAILED\n" + "\n".join(errors))
         return 1
-    print(f"OK: {len(inputs)} inputs, {n_out} outputs, shape, uint8 dtype and OME-XML checked, panimg read all outputs")
+    print(f"OK: {len(inputs)} inputs, {n_out} outputs, output type {sorted(modes)}, shape, dtype and OME-XML checked, "
+          f"panimg read all outputs" + (" (without previews, see warning)" if warnings else ""))
     return 0
 
 
