@@ -2,7 +2,7 @@ name: submission container
 
 on:
   push:
-    paths: [Dockerfile, requirements-submission.txt, inference.py, ome_utils.py, submission_check.py, config.py, dataset.py, evaluate.py, predict.py, unet.py, .github/workflows/submission.yml]
+    paths: [Dockerfile, requirements-submission.txt, inference.py, ome_utils.py, output_scale.json, submission_check.py, config.py, dataset.py, evaluate.py, predict.py, unet.py, .github/workflows/submission.yml]
   workflow_dispatch:
 
 jobs:
@@ -16,10 +16,14 @@ jobs:
         run: |
           mkdir -p ci/input ci/model ci/output && chmod -R a+rwx ci
           docker run --rm --entrypoint python -v "$PWD":/w -w /w lmc2-task1 submission_check.py make-inputs ci/input ci/model
-      - name: Run the container offline, as on Grand Challenge
+      - name: Run the container offline, as on Grand Challenge (image default output mode, then uint8)
         run: |
+          mkdir -p ci/output_uint8 && chmod -R a+rwx ci
           docker run --rm --network none --memory 16g \
             -v "$PWD/ci/input":/input:ro -v "$PWD/ci/output":/output -v "$PWD/ci/model":/opt/ml/model:ro \
+            lmc2-task1
+          docker run --rm --network none --memory 16g -e LMC2_OUTPUT_MODE=uint8 \
+            -v "$PWD/ci/input":/input:ro -v "$PWD/ci/output_uint8":/output -v "$PWD/ci/model":/opt/ml/model:ro \
             lmc2-task1
       - uses: actions/setup-python@v5
         with:
@@ -28,3 +32,4 @@ jobs:
         run: |
           pip install -q panimg pyvips-binary tifffile numpy
           python submission_check.py check-outputs ci/input ci/output
+          python submission_check.py check-outputs ci/input ci/output_uint8
