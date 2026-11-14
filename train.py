@@ -98,7 +98,8 @@ def main():
     ap.add_argument("--config-from", default=None, help="checkpoint whose config is copied (then overridden by the options)")
     ap.add_argument("--target-p-low", type=float, default=None, help="training targets only")
     ap.add_argument("--target-p-high", type=float, default=None, help="training targets only")
-    ap.add_argument("--no-target-clip", action="store_true", help="training targets are not clipped to [0, 1]")
+    ap.add_argument("--target-clip", action=argparse.BooleanOptionalAction, default=None,
+                    help="--no-target-clip: training targets are not clipped to [0, 1]")
     ap.add_argument("--train-prepared-dir", default=None, help="prepared folder built with the training target rule")
     ap.add_argument("--output-activation", choices=["sigmoid", "linear"], default=None)
     a = ap.parse_args()
@@ -111,12 +112,14 @@ def main():
         prepared_dir=Path(a.prepared_dir) if a.prepared_dir and a.prepared_dir.lower() != "none" else None,
         pairs_csv=Path(a.pairs_csv) if a.pairs_csv else None,
         train_target_p_low=a.target_p_low, train_target_p_high=a.target_p_high,
-        train_target_clip=False if a.no_target_clip else None,
-        train_prepared_dir=Path(a.train_prepared_dir) if a.train_prepared_dir else None,
+        train_target_clip=a.target_clip,
+        train_prepared_dir=Path(a.train_prepared_dir) if a.train_prepared_dir and a.train_prepared_dir.lower() != "none" else None,
         output_activation=a.output_activation).items() if v is not None}
     base_cfg = config_from(a.config_from) if a.config_from else ChallengeConfig()
     if a.prepared_dir and a.prepared_dir.lower() == "none":
         over["prepared_dir"] = None  # read the raw TIFFs even if the copied config names a prepared folder
+    if a.train_prepared_dir and a.train_prepared_dir.lower() == "none":
+        over["train_prepared_dir"] = None
     cfg = dataclasses.replace(base_cfg, **over)
     out = Path(a.out)
     cfg_dict = json.loads(json.dumps(dataclasses.asdict(cfg), default=str))

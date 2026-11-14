@@ -55,6 +55,8 @@ def build_one(cfg, r, out, rule):
 def make_shards(out, shards_dir, n_shards):
     files = sorted(out.glob("*.npy"))
     shards_dir.mkdir(parents=True, exist_ok=True)
+    for old in shards_dir.glob("prepared_shard_*.tar"):  # a rebuild with another --n-shards must not leave stale shards
+        old.unlink()
     for s in range(n_shards):
         with tarfile.open(shards_dir / f"prepared_shard_{s:02d}.tar", "w") as tar:
             for f in files[s::n_shards]:
@@ -84,6 +86,10 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     if a.mode == "restore":
         t0 = time.time()
+        src_rule = prepared_rule(Path(a.shards_dir))
+        if (out / "prepared_info.json").exists() or any(out.glob("*.npy")):
+            if prepared_rule(out) != src_rule:
+                raise SystemExit(f"{out} holds files built with {prepared_rule(out)}, the shards hold {src_rule}. Use an empty folder.")
         for shard in sorted(Path(a.shards_dir).glob("*.tar")):
             with tarfile.open(shard) as tar:
                 tar.extractall(out, filter="data")

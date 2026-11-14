@@ -57,6 +57,8 @@ class LMC2Dataset(Dataset):
         self.target_rule = train_target_rule(cfg) if train else declared_rule(cfg)
         self.pdir = cfg.train_prepared_dir if (train and cfg.train_prepared_dir is not None) else cfg.prepared_dir
         if self.pdir is not None:
+            if not self.pdir.is_dir():
+                raise FileNotFoundError(f"prepared folder {self.pdir} not found (restore it, or pass --prepared-dir none)")
             built = prepared_rule(self.pdir)
             if built != self.target_rule:
                 raise ValueError(f"{self.pdir} was built with target rule {built}, this dataset needs {self.target_rule}. "
