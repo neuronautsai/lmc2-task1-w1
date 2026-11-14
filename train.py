@@ -5,12 +5,17 @@ validation subset (cfg.val_subset images, drawn once with seed 42). The best che
 local validation split. Local selection rule only, not a reconstruction of the official rank aggregation.
 
 Usage: python train.py --out OUTPUT_DIR [--seed 42] [--epochs 50] [--overfit-n 8]
+       python train.py --out OUTPUT_DIR --config-from RUN/best.pt [other options override the copied config]
+
+--config-from copies every setting of an earlier run from its checkpoint (paths included), so a controlled run changes
+only what is passed on the command line. run_info.json records the package and CUDA versions of the run.
 """
 import argparse
 import dataclasses
 import math
 import json
 import os
+import platform
 import random
 import time
 from pathlib import Path
@@ -26,6 +31,8 @@ from dataset import LMC2Dataset
 from evaluate import breakdown, summarize
 from predict import evaluate_model
 from unet import UNet
+
+PATH_FIELDS = ("data_root", "pairs_csv", "output_dir", "prepared_dir", "train_prepared_dir")
 
 
 def observed_channel_l1(prediction, target, observed):
@@ -43,6 +50,28 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
+def versions():
+    import scipy
+    import skimage
+    v = {"python": platform.python_version(), "torch": torch.__version__, "numpy": np.__version__,
+         "scikit-image": skimage.__version__, "scipy": scipy.__version__, "pandas": pd.__version__,
+         "cuda": torch.version.cuda, "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
+         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None}
+    return v
+
+
+def config_from(path):
+    """ChallengeConfig with the settings stored in an earlier checkpoint. Unknown keys are refused, new fields keep their default."""
+    stored = torch.load(path, map_location="cpu", weights_only=False)["cfg"]
+    names = {f.name for f in dataclasses.fields(ChallengeConfig)}
+    extra = set(stored) - names
+    if extra:
+        raise SystemExit(f"{path} has config keys this code does not know: {sorted(extra)}")
+    kw = {k: (Path(v) if k in PATH_FIELDS and v not in (None, "None") else (None if v == "None" else v))
+          for k, v in stored.items()}
+    return dataclasses.replace(ChallengeConfig(), **kw)
+
+
 def macro(df):
     t = summarize(df)
     return t.attrs["macro_ssim"], t.attrs["macro_pcc"], t
@@ -51,7 +80,7 @@ def macro(df):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
-    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--seed", type=int, default=None, help="default 42, or the seed of --config-from")
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--overfit-n", type=int, default=0, help="train and score on N training images only")
     ap.add_argument("--data-root", default=None)
@@ -64,8 +93,14 @@ def main():
     ap.add_argument("--lr-schedule", choices=["const", "cosine"], default=None)
     ap.add_argument("--modality", choices=["none", "film"], default=None, help="modality-aware conditioning")
     ap.add_argument("--modality-dropout", type=float, default=None)
-    ap.add_argument("--prepared-dir", default=None, help="folder written by prepare_dataset.py (default: raw TIFFs)")
+    ap.add_argument("--prepared-dir", default=None, help="folder written by prepare_dataset.py (default: raw TIFFs, \"none\" forces raw TIFFs)")
     ap.add_argument("--resume", action="store_true", help="continue from OUT/last.pt if it exists")
+    ap.add_argument("--config-from", default=None, help="checkpoint whose config is copied (then overridden by the options)")
+    ap.add_argument("--target-p-low", type=float, default=None, help="training targets only")
+    ap.add_argument("--target-p-high", type=float, default=None, help="training targets only")
+    ap.add_argument("--no-target-clip", action="store_true", help="training targets are not clipped to [0, 1]")
+    ap.add_argument("--train-prepared-dir", default=None, help="prepared folder built with the training target rule")
+    ap.add_argument("--output-activation", choices=["sigmoid", "linear"], default=None)
     a = ap.parse_args()
 
     over = {k: v for k, v in dict(
@@ -73,9 +108,16 @@ def main():
         num_workers=a.workers, val_subset=a.val_subset, learning_rate=a.lr,
         lr_schedule=a.lr_schedule, modality_mode=a.modality, modality_dropout=a.modality_dropout,
         data_root=Path(a.data_root) if a.data_root else None,
-        prepared_dir=Path(a.prepared_dir) if a.prepared_dir else None,
-        pairs_csv=Path(a.pairs_csv) if a.pairs_csv else None).items() if v is not None}
-    cfg = dataclasses.replace(ChallengeConfig(), **over)
+        prepared_dir=Path(a.prepared_dir) if a.prepared_dir and a.prepared_dir.lower() != "none" else None,
+        pairs_csv=Path(a.pairs_csv) if a.pairs_csv else None,
+        train_target_p_low=a.target_p_low, train_target_p_high=a.target_p_high,
+        train_target_clip=False if a.no_target_clip else None,
+        train_prepared_dir=Path(a.train_prepared_dir) if a.train_prepared_dir else None,
+        output_activation=a.output_activation).items() if v is not None}
+    base_cfg = config_from(a.config_from) if a.config_from else ChallengeConfig()
+    if a.prepared_dir and a.prepared_dir.lower() == "none":
+        over["prepared_dir"] = None  # read the raw TIFFs even if the copied config names a prepared folder
+    cfg = dataclasses.replace(base_cfg, **over)
     out = Path(a.out)
     cfg_dict = json.loads(json.dumps(dataclasses.asdict(cfg), default=str))
     out.mkdir(parents=True, exist_ok=True)
@@ -100,7 +142,7 @@ def main():
                         drop_last=len(train_ds) >= cfg.batch_size,
                         generator=torch.Generator().manual_seed(cfg.seed))
     n_mod = (len(MODALITIES) + 1) if cfg.modality_mode == "film" else 0
-    model = UNet(base=cfg.base_channels, n_mod=n_mod).to(device)
+    model = UNet(base=cfg.base_channels, n_mod=n_mod, out_act=cfg.output_activation).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate)
     print("parameters:", sum(p.numel() for p in model.parameters()))
     K = cfg.crops_per_image
@@ -176,7 +218,7 @@ def main():
     info = {"best_epoch": best_epoch, "train_seconds": train_time, "inference_seconds_per_image": sec_per_image,
             "peak_gpu_memory_gb": (torch.cuda.max_memory_allocated() / 1e9) if device.type == "cuda" else None,
             "macro_ssim": m_ssim, "macro_pcc": m_pcc, "config": cfg_dict,
-            "overfit_n": a.overfit_n, **unk}
+            "overfit_n": a.overfit_n, "config_from": a.config_from, "versions": versions(), **unk}
     json.dump(info, open(out / "run_info.json", "w"), indent=2, default=str)
     print(table.to_string(index=False))
     print({k: info[k] for k in ("best_epoch", "train_seconds", "inference_seconds_per_image", "peak_gpu_memory_gb",

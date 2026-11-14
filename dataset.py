@@ -1,6 +1,8 @@
 """Dataset for LMC2 Task 1: one transmitted-light plane to four fluorescence channels.
 
 Normalization rule (declared): every image is scaled on its own by the 1st and 99.5th percentile and clipped to [0, 1].
+Optional training target rule (cfg.train_target_*): training targets only can use other percentiles and no clipping.
+Inputs and evaluation targets always use the declared rule.
 The input rule uses only the input image, so it also works at inference.
 Targets are normalized the same way, so models predict normalized fluorescence and absolute intensity is not evaluated.
 Training items hold crops_per_image random crops of one image (shape K, C, P, P), evaluation items hold the full image.
@@ -14,15 +16,28 @@ import tifffile
 import torch
 from torch.utils.data import Dataset, get_worker_info
 
-from config import ORGANELLES, ChallengeConfig, modality_id
+import json
+
+from config import ORGANELLES, ChallengeConfig, declared_rule, modality_id, train_target_rule
 
 
-def normalize(a, p_low, p_high):
+def normalize(a, p_low, p_high, clip=True):
     a = a.astype(np.float32)
     lo, hi = np.percentile(a, [p_low, p_high])
     if hi <= lo:
         return np.zeros_like(a)
-    return np.clip((a - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
+    a = (a - lo) / (hi - lo)
+    return (np.clip(a, 0.0, 1.0) if clip else a).astype(np.float32)
+
+
+def prepared_rule(pdir):
+    """Target rule a prepared folder was built with (prepared_info.json). Folders built before the file existed use the
+    declared default rule (1, 99.5, clipped)."""
+    f = pdir / "prepared_info.json"
+    if not f.exists():
+        return (1.0, 99.5, True)
+    r = json.load(open(f))["target_rule"]
+    return (float(r["p_low"]), float(r["p_high"]), bool(r["clip"]))
 
 
 def load_pairs(cfg, split):
@@ -39,6 +54,14 @@ class LMC2Dataset(Dataset):
         self.df = load_pairs(cfg, split)
         self.seed = seed
         self.epoch = 0
+        self.target_rule = train_target_rule(cfg) if train else declared_rule(cfg)
+        self.pdir = cfg.train_prepared_dir if (train and cfg.train_prepared_dir is not None) else cfg.prepared_dir
+        if self.pdir is not None:
+            built = prepared_rule(self.pdir)
+            if built != self.target_rule:
+                raise ValueError(f"{self.pdir} was built with target rule {built}, this dataset needs {self.target_rule}. "
+                                 "Build a prepared folder with that rule (prepare_dataset.py --target-*) and pass it as "
+                                 "train_prepared_dir, or read the raw TIFFs.")
         self._rng = None
         self._rng_key = None
 
@@ -57,9 +80,10 @@ class LMC2Dataset(Dataset):
     def __len__(self):
         return len(self.df)
 
-    def _read(self, study, name):
+    def _read(self, study, name, rule=None):
         a = tifffile.imread(self.cfg.data_root / f"Study_{study:02d}" / name)
-        return normalize(a, self.cfg.p_low, self.cfg.p_high)
+        lo, hi, clip = declared_rule(self.cfg) if rule is None else rule
+        return normalize(a, lo, hi, clip)
 
     def _augment(self, x, y):
         size = self.cfg.patch_size
@@ -94,7 +118,7 @@ class LMC2Dataset(Dataset):
         return self._flip_rotate(crop[:1], crop[1:])
 
     def _prepared_item(self, r):
-        arr = np.load(self.cfg.prepared_dir / f"{int(r.study):02d}_{int(r.image_id):05d}.npy", mmap_mode="r")
+        arr = np.load(self.pdir / f"{int(r.study):02d}_{int(r.image_id):05d}.npy", mmap_mode="r")
         assert arr.ndim == 3 and arr.shape[0] == 1 + len(ORGANELLES), f"bad prepared array {arr.shape}"
         observed = np.array([bool(r[f"{o}_obs"]) for o in ORGANELLES])
         if self.train:
@@ -107,7 +131,7 @@ class LMC2Dataset(Dataset):
 
     def __getitem__(self, idx):
         r = self.df.iloc[idx]
-        if self.cfg.prepared_dir is not None:
+        if self.pdir is not None:
             x, y, observed = self._prepared_item(r)
             return {
                 "input": torch.from_numpy(np.ascontiguousarray(x)),
@@ -123,7 +147,7 @@ class LMC2Dataset(Dataset):
         observed = np.zeros(len(ORGANELLES), dtype=bool)
         for k, o in enumerate(ORGANELLES):
             if bool(r[f"{o}_obs"]):
-                t = self._read(int(r.study), r[f"{o}_file"])
+                t = self._read(int(r.study), r[f"{o}_file"], self.target_rule)
                 assert t.shape == x.shape[1:], f"shape mismatch {r.study} {r.image_id} {o}"
                 y[k] = t
                 observed[k] = True

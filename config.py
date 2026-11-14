@@ -36,3 +36,21 @@ class ChallengeConfig:
     # Per-image percentile normalization, applied to inputs and targets
     p_low: float = 1.0
     p_high: float = 99.5
+    # Training target rule (review of Week 3, item 3). The defaults keep the declared rule above. Only the training
+    # targets change: inputs and the validation targets used for checkpoint selection and the local proxy keep the
+    # declared rule, so the proxy numbers stay comparable with earlier runs.
+    train_target_p_low: float | None = None  # None uses p_low
+    train_target_p_high: float | None = None  # None uses p_high
+    train_target_clip: bool = True
+    train_prepared_dir: Path | None = None  # prepared folder built with the training target rule (None uses prepared_dir)
+    output_activation: str = "sigmoid"  # "sigmoid" (output in (0, 1)) or "linear" (unbounded output)
+
+
+def declared_rule(cfg):
+    return (float(cfg.p_low), float(cfg.p_high), True)
+
+
+def train_target_rule(cfg):
+    lo = cfg.p_low if cfg.train_target_p_low is None else cfg.train_target_p_low
+    hi = cfg.p_high if cfg.train_target_p_high is None else cfg.train_target_p_high
+    return (float(lo), float(hi), bool(cfg.train_target_clip))

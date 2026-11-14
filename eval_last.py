@@ -21,7 +21,7 @@ from config import MODALITIES, ChallengeConfig
 from dataset import LMC2Dataset
 from evaluate import summarize
 from predict import evaluate_model
-from unet import UNet
+from unet import unet_from_checkpoint
 
 CFG = ("base", "cos", "cosfilm")
 
@@ -38,9 +38,8 @@ def score_run(run, cfg, val_ds, device):
     if (out / "eval_info.json").exists():
         return json.load(open(out / "eval_info.json"))
     ck = torch.load(run / "last.pt", map_location=device, weights_only=False)
-    n_mod = (len(MODALITIES) + 1) if ck["cfg"].get("modality_mode") == "film" else 0
-    model = UNet(base=int(ck["cfg"]["base_channels"]), n_mod=n_mod).to(device)
-    model.load_state_dict(ck["model"])
+    model = unet_from_checkpoint(ck, device, len(MODALITIES) + 1)
+    n_mod = model.n_mod
     df, sec = evaluate_model(model, val_ds, cfg, device)
     t = summarize(df)
     info = {"epoch": ck["epoch"], "macro_ssim": float(t.attrs["macro_ssim"]), "macro_pcc": float(t.attrs["macro_pcc"]),

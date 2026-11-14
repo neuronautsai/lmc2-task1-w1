@@ -33,7 +33,7 @@ from config import ORGANELLES, ChallengeConfig
 from dataset import LMC2Dataset
 from evaluate import score_image, summarize
 from predict import predict_full
-from unet import UNet
+from unet import unet_from_checkpoint
 
 FACTOR = 16
 
@@ -91,9 +91,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ck = torch.load(a.checkpoint, map_location=device, weights_only=False)
     assert ck["cfg"].get("modality_mode", "none") in (None, "none"), "use an unconditioned checkpoint"
-    model = UNet(base=int(ck["cfg"]["base_channels"]), n_mod=0).to(device)
-    model.load_state_dict(ck["model"])
-    model.eval()
+    model = unet_from_checkpoint(ck, device)
     ds = LMC2Dataset(cfg, "val", train=False)
     figure_ids = {tuple(int(v) for v in f.split(":")) for f in a.figure}
 

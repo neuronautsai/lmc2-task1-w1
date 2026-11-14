@@ -22,7 +22,7 @@ from dataset import LMC2Dataset
 from evaluate import score_image
 from official_metrics import METRIC_COLUMNS, official_metrics
 from predict import predict_full
-from unet import UNet
+from unet import unet_from_checkpoint
 
 
 def retry(fn, tries=6, wait=5.0):
@@ -64,10 +64,8 @@ def main():
     cfg = ChallengeConfig(**kw)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ck = torch.load(a.checkpoint, map_location=device)
-    n_mod = (len(MODALITIES) + 1) if ck["cfg"].get("modality_mode") == "film" else 0
-    model = UNet(base=int(ck["cfg"]["base_channels"]), n_mod=n_mod).to(device)
-    model.load_state_dict(ck["model"])
-    model.eval()
+    model = unet_from_checkpoint(ck, device, len(MODALITIES) + 1)
+    n_mod = model.n_mod
     ds = LMC2Dataset(cfg, "val", train=False)
     idxs = range(len(ds)) if not a.subset else range(min(a.subset, len(ds)))
     out = Path(a.out)
