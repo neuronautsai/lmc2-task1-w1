@@ -87,7 +87,7 @@ def main():
                      "last_pcc_unknown": last.get("macro_pcc_unknown_modality")})
     df = pd.DataFrame(rows).sort_values(["config", "seed"])
     df.to_csv(root / "w3_best_vs_last.csv", index=False)
-    cfgs = [c for c in CFG if (df.config == c).any()]
+    cfgs = [c for c in CFG if (df.config == c).any()] + [c for c in dict.fromkeys(df.config) if c not in CFG]
     L = ["Every run (full validation split, macro over organelles)", df.round(4).to_string(index=False), "",
          "Per configuration, mean ± std over seeds"]
     L.append(pd.DataFrame({c: {k: ms(df[df.config == c][k]) for k in

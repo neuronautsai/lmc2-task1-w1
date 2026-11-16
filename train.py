@@ -1,4 +1,4 @@
-"""Train the four-output U-Net with observed-channel L1 loss, AdamW, AMP and checkpointing.
+"""Train the four-output U-Net with observed-channel L1 loss (optionally mixed with an SSIM term), AdamW, AMP and checkpointing.
 
 Checkpoint rule (fixed before comparing methods): maximum macro-average SSIM over the four organelles on a fixed
 validation subset (cfg.val_subset images, drawn once with seed 42). The best checkpoint is then scored on the entire
@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -41,6 +42,31 @@ def observed_channel_l1(prediction, target, observed):
     if not valid.any():
         raise ValueError("The batch has no observed fluorescence targets")
     return channel_errors[valid].mean()
+
+
+def observed_channel_ssim(prediction, target, observed, win=7, k1=0.01, k2=0.03):
+    """Mean SSIM over the observed (sample, channel) pairs, computed like skimage structural_similarity with its
+    defaults and data_range 1 (the local proxy): uniform win x win window, sample covariance, valid region only."""
+    p, t = prediction.float(), target.float()
+    pool = lambda z: F.avg_pool2d(z, win, stride=1)
+    ux, uy = pool(p), pool(t)
+    norm = win * win / (win * win - 1.0)
+    vx = norm * (pool(p * p) - ux * ux)
+    vy = norm * (pool(t * t) - uy * uy)
+    vxy = norm * (pool(p * t) - ux * uy)
+    c1, c2 = k1 ** 2, k2 ** 2
+    s = ((2 * ux * uy + c1) * (2 * vxy + c2)) / ((ux * ux + uy * uy + c1) * (vx + vy + c2))
+    valid = observed.bool()
+    if not valid.any():
+        raise ValueError("The batch has no observed fluorescence targets")
+    return s.mean((-2, -1))[valid].mean()
+
+
+def training_loss(prediction, target, observed, ssim_weight):
+    l1 = observed_channel_l1(prediction, target, observed)
+    if ssim_weight <= 0:
+        return l1
+    return (1.0 - ssim_weight) * l1 + ssim_weight * (1.0 - observed_channel_ssim(prediction, target, observed))
 
 
 def set_seed(seed):
@@ -102,6 +128,7 @@ def main():
                     help="--no-target-clip: training targets are not clipped to [0, 1]")
     ap.add_argument("--train-prepared-dir", default=None, help="prepared folder built with the training target rule")
     ap.add_argument("--output-activation", choices=["sigmoid", "linear"], default=None)
+    ap.add_argument("--ssim-weight", type=float, default=None, help="w in (1 - w) L1 + w (1 - SSIM), 0 = plain L1")
     a = ap.parse_args()
 
     over = {k: v for k, v in dict(
@@ -114,7 +141,7 @@ def main():
         train_target_p_low=a.target_p_low, train_target_p_high=a.target_p_high,
         train_target_clip=a.target_clip,
         train_prepared_dir=Path(a.train_prepared_dir) if a.train_prepared_dir and a.train_prepared_dir.lower() != "none" else None,
-        output_activation=a.output_activation).items() if v is not None}
+        output_activation=a.output_activation, ssim_weight=a.ssim_weight).items() if v is not None}
     base_cfg = config_from(a.config_from) if a.config_from else ChallengeConfig()
     if a.prepared_dir and a.prepared_dir.lower() == "none":
         over["prepared_dir"] = None  # read the raw TIFFs even if the copied config names a prepared folder
@@ -150,14 +177,30 @@ def main():
     print("parameters:", sum(p.numel() for p in model.parameters()))
     K = cfg.crops_per_image
     history, best, best_epoch = [], -1.0, -1
+    best_mean, best_mean_epoch = -1.0, -1  # second rule: mean of macro SSIM and PCC (best_mean.pt)
     start_epoch, elapsed_before = 0, 0.0
     last_path = out / "last.pt"
     if a.resume and last_path.exists():
         ck = torch.load(last_path, map_location=device)
+        stored = {k: v for k, v in ck["cfg"].items() if k not in PATH_FIELDS + ("num_workers",)}
+        current = {k: v for k, v in cfg_dict.items() if k not in PATH_FIELDS + ("num_workers",)}
+        changed = {k: (stored.get(k), current.get(k)) for k in set(stored) | set(current) if stored.get(k) != current.get(k)
+                   and not (k not in stored and current.get(k) == getattr(ChallengeConfig(), k, None))}
+        if changed:
+            raise SystemExit(f"--resume with settings that differ from {last_path} (stored, now): {changed}. "
+                             "Pass the same options as the interrupted run, or use another --out.")
         model.load_state_dict(ck["model"])
         opt.load_state_dict(ck["opt"])
         start_epoch, history = ck["epoch"], ck["history"]
         best, best_epoch, elapsed_before = ck["best"], ck["best_epoch"], ck["elapsed"]
+        if "best_mean" in ck:
+            best_mean, best_mean_epoch = ck["best_mean"], ck["best_mean_epoch"]
+        else:  # last.pt from before best_mean existed: the rule is rebuilt from the history, best_mean.pt is not
+            means = [0.5 * (h["val_macro_ssim"] + h["val_macro_pcc"]) for h in history]
+            if means:
+                i = int(np.nanargmax(means))
+                best_mean, best_mean_epoch = float(means[i]), i + 1
+            print(f"note: {last_path} has no best_mean.pt record, best_mean.pt only covers epochs after {start_epoch}")
         print(f"resumed from epoch {start_epoch}, best epoch {best_epoch} ({best:.4f})")
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats()
@@ -183,7 +226,7 @@ def main():
                 mod = torch.from_numpy(ids).repeat_interleave(K).to(device)
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp):
                 pred = model(x) if mod is None else model(x, mod)
-            loss = observed_channel_l1(pred, y, obs)
+            loss = training_loss(pred, y, obs, cfg.ssim_weight)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
@@ -198,8 +241,13 @@ def main():
         if m_ssim > best:
             best, best_epoch = m_ssim, epoch + 1
             torch.save({"model": model.state_dict(), "epoch": epoch + 1, "cfg": cfg_dict}, out / "best.pt")
+        m_mean = 0.5 * (m_ssim + m_pcc)
+        if m_mean > best_mean:
+            best_mean, best_mean_epoch = m_mean, epoch + 1
+            torch.save({"model": model.state_dict(), "epoch": epoch + 1, "cfg": cfg_dict}, out / "best_mean.pt")
         torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "epoch": epoch + 1, "cfg": cfg_dict,
-                    "history": json.loads(json.dumps(history, default=float)), "best": float(best), "best_epoch": best_epoch, "elapsed": row["elapsed_s"]},
+                    "history": json.loads(json.dumps(history, default=float)), "best": float(best), "best_epoch": best_epoch, "best_mean": float(best_mean),
+                    "best_mean_epoch": best_mean_epoch, "elapsed": row["elapsed_s"]},
                    last_path)
     train_time = time.time() - t_start
 
@@ -218,7 +266,7 @@ def main():
     table.to_csv(out / "summary.csv", index=False)
     breakdown(df, "modality").to_csv(out / "by_modality.csv", index=False)
     breakdown(df, "study").to_csv(out / "by_study.csv", index=False)
-    info = {"best_epoch": best_epoch, "train_seconds": train_time, "inference_seconds_per_image": sec_per_image,
+    info = {"best_epoch": best_epoch, "best_mean_epoch": best_mean_epoch, "train_seconds": train_time, "inference_seconds_per_image": sec_per_image,
             "peak_gpu_memory_gb": (torch.cuda.max_memory_allocated() / 1e9) if device.type == "cuda" else None,
             "macro_ssim": m_ssim, "macro_pcc": m_pcc, "config": cfg_dict,
             "overfit_n": a.overfit_n, "config_from": a.config_from, "versions": versions(), **unk}

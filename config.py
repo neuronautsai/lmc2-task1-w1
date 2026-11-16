@@ -44,6 +44,9 @@ class ChallengeConfig:
     train_target_clip: bool = True
     train_prepared_dir: Path | None = None  # prepared folder built with the training target rule (None uses prepared_dir)
     output_activation: str = "sigmoid"  # "sigmoid" (output in (0, 1)) or "linear" (unbounded output)
+    # SSIM term in the loss (review of Week 3, item 5): loss = (1 - w) * L1 + w * (1 - SSIM), SSIM computed like the local
+    # proxy (skimage defaults: 7 x 7 uniform window, data range 1). w = 0 keeps the plain L1 loss of Weeks 2 and 3.
+    ssim_weight: float = 0.0
 
 
 def declared_rule(cfg):
