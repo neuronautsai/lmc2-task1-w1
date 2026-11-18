@@ -67,7 +67,7 @@ python infer.py --checkpoint best.pt --input IMAGE.tif --out PRED.ome.tiff
 | `inference.py`, `ome_utils.py`, `Dockerfile`, `requirements-submission.txt` | Grand Challenge container |
 | `submission_check.py`, `.github/workflows/submission.yml` | Container checks, run locally and in CI on synthetic inputs |
 | `output_scale.json` | Per-organelle intensity range for the float32 output mode |
-| `results/` | Data figures, split manifest, Week 2 figures, results record of the issue |
+| `results/` | Data figures, split manifest, Week 2 figures, results record of the issue, literature review (`literature_review.md`) |
 
 ## Container
 
