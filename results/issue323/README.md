@@ -22,3 +22,4 @@ Markdown copies of the result comments posted on the task issue (itu-biai/dlct-d
 | 16 | [16_review_item5_ssim_loss_interim.md](16_review_item5_ssim_loss_interim.md) | SSIM term in the loss (review item 5), interim result after seed 42 |
 | 17 | [17_review_item5_ssim_loss_final.md](17_review_item5_ssim_loss_final.md) | SSIM term in the loss (review item 5), final result over seeds 42 and 123 |
 | 18 | [18_leakage_check.md](18_leakage_check.md) | Leakage check of the local split |
+| 19 | [19_ensemble_base_seeds.md](19_ensemble_base_seeds.md) | Ensemble of the three base seeds (new task: ensemble approaches) |
