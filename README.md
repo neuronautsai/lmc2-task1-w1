@@ -13,7 +13,7 @@ The work is reported in the task issue (itu-biai/dlct-docs #323). A copy of ever
   2. Output intensity scale: float32 output tested on the Mock phase, scores went down, the container is back on uint8 (`v0.1.0`).
   3. Tile blending: a Hann window reduces tile seams (`compare_blending.py`).
   4. Training targets p2 to p99.8 without clipping: no gain on the official-style scorer.
-  5. SSIM term in the loss: in progress, the first seed scores lower on the official-style scorer.
+  5. SSIM term in the loss: lower PCC and higher errors on the official-style scorer over seeds 42 and 123, not adopted.
 - Scores: `evaluate.py` is a local proxy and `official_metrics.py` an official-style reconstruction. Neither is an official challenge score. Decisions are taken on the official-style scorer, because the proxy was misleading in items 4 and 5.
 
 ## Pipeline
