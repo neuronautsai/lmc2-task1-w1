@@ -20,3 +20,4 @@ Markdown copies of the result comments posted on the task issue (itu-biai/dlct-d
 | 14 | [14_review_item3_tile_blending.md](14_review_item3_tile_blending.md) | Weighted tile blending (review item 3) |
 | 15 | [15_review_item4_target_rule.md](15_review_item4_target_rule.md) | Training targets p2 to p99.8 without clipping (review item 4) |
 | 16 | [16_review_item5_ssim_loss_interim.md](16_review_item5_ssim_loss_interim.md) | SSIM term in the loss (review item 5), interim result after seed 42 |
+| 17 | [17_review_item5_ssim_loss_final.md](17_review_item5_ssim_loss_final.md) | SSIM term in the loss (review item 5), final result over seeds 42 and 123 |
