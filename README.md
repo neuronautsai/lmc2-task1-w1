@@ -61,6 +61,7 @@ python infer.py --checkpoint best.pt --input IMAGE.tif --out PRED.ome.tiff
 | `baseline_constant.py` | Constant control (training-set mean per organelle) |
 | `eval_last.py`, `aggregate_w3.py`, `w3_inspect.py` | Week 3 analysis: last epoch, aggregation over seeds, scores by modality and study |
 | `compare_output_scale.py`, `compare_blending.py`, `proxy_ceiling.py` | Review items 2, 3 and 4 |
+| `leakage_check.py` | Leakage check of the local split: split integrity, duplicates across splits, effect of the checkpoint-selection subset |
 | `make_figures.py` | Training curves and example grids |
 | `infer.py` | End-to-end inference on one image |
 | `inference.py`, `ome_utils.py`, `Dockerfile`, `requirements-submission.txt` | Grand Challenge container |
