@@ -3,11 +3,13 @@
 Runs the same code path as inference.py (normalization, Hann tiling, TTA, ensemble mean, uint8 conversion) on one
 synthetic uint16 image of --size x --size pixels and reports seconds per case for every TTA setting asked for, plus the
 peak GPU memory and the process peak RAM. Weights: the given checkpoints, else --n-models random-weight U-Nets (the
-run time does not depend on the weight values).
+run time does not depend on the weight values). Checkpoints load through inference.load_model, so U-Net and
+pretrained-encoder U-Net checkpoints can be mixed. --random-arch smp times random-weight pretrained-encoder U-Nets.
 
 Usage:
   python time_inference.py --checkpoint W3/base_s42/best.pt W3/base_s123/best.pt W3/base_s456/best.pt --tta 1 4 8
   python time_inference.py --n-models 3 --tta 1 4 8 --device cpu
+  python time_inference.py --n-models 3 --random-arch smp --encoder resnet34 --tta 1 4 8
 """
 import argparse
 import platform
@@ -20,13 +22,16 @@ import torch
 from config import ChallengeConfig
 from dataset import normalize
 from predict import predict_tta
-from unet import UNet
+from inference import load_model
+from unet import SmpUNet, UNet
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", nargs="*", default=[])
     ap.add_argument("--n-models", type=int, default=3, help="random-weight models when no checkpoint is given")
+    ap.add_argument("--random-arch", default="unet", choices=["unet", "smp"])
+    ap.add_argument("--encoder", default="resnet34", help="encoder of the random smp models")
     ap.add_argument("--size", type=int, default=2048)
     ap.add_argument("--tta", type=int, nargs="+", default=[1, 4, 8])
     ap.add_argument("--window", default="hann")
@@ -38,18 +43,15 @@ def main():
     device = torch.device(a.device)
     models = []
     if a.checkpoint:
-        for c in a.checkpoint:
-            ck = torch.load(c, map_location=device, weights_only=False)
-            m = UNet(base=int(ck.get("cfg", {}).get("base_channels", 32)), n_mod=0).to(device)
-            m.load_state_dict({k: v.float() for k, v in ck["model"].items()})
-            models.append(m.eval())
+        models = [load_model(c, device).eval() for c in a.checkpoint]
     else:
         for seed in range(a.n_models):
             torch.manual_seed(seed)
-            models.append(UNet(base=32, n_mod=0).to(device).eval())
+            m = UNet(base=32, n_mod=0) if a.random_arch == "unet" else SmpUNet(a.encoder, encoder_weights=None)
+            models.append(m.to(device).eval())
     name = torch.cuda.get_device_name(device) if device.type == "cuda" else platform.processor() or "cpu"
     print(f"device {device} ({name}) | torch {torch.__version__} | cpu threads {torch.get_num_threads()} | "
-          f"models {len(models)} | size {a.size} | window {a.window} | overlap {a.overlap}", flush=True)
+          f"models {len(models)} ({', '.join(type(m).__name__ for m in models)}) | size {a.size} | window {a.window} | overlap {a.overlap}", flush=True)
     raw = np.random.default_rng(0).integers(0, 65535, size=(a.size, a.size)).astype(np.uint16)
     for n_tta in a.tta:
         times = []

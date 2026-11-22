@@ -2,7 +2,7 @@
 
 Code for Task 1 of the [Light My Cells 2](https://lightmycells2.grand-challenge.org/) challenge (France-BioImaging, Grand Challenge): predict the best-focus fluorescence images of four structures (Nucleus, Mitochondria, Tubulin, Actin) from one label-free transmitted-light image (bright-field, phase contrast or DIC). This is also called in-silico labeling. Task 2 of the challenge (maximum-intensity projection from a stack) is not covered here.
 
-The work is reported in the task issue (itu-biai/dlct-docs #323). A copy of every result comment, with tables, commits and commands, is in [`results/issue323/`](results/issue323/README.md).
+The work is reported in the task issue (itu-biai/dlct-docs #323). A copy of every result comment, with tables, commits and commands, is in [`results/issue323/`](results/issue323/README.md). Results from the follow-up task (itu-biai/dlct-docs #333) are reported there and copied to [`results/issue333/`](results/issue333/README.md).
 
 ## Current state
 
@@ -14,6 +14,14 @@ The work is reported in the task issue (itu-biai/dlct-docs #323). A copy of ever
   3. Tile blending: a Hann window reduces tile seams (`compare_blending.py`).
   4. Training targets p2 to p99.8 without clipping: no gain on the official-style scorer.
   5. SSIM term in the loss: lower PCC and higher errors on the official-style scorer over seeds 42 and 123, not adopted.
+- Follow-up task #333 (code in place, runs pending unless a result is linked):
+  1. Focal plane of the inputs: `defocus_eval.py` scores the validation images with the transmitted-light slice at best focus + d.
+  2. Pretrained encoder: `train.py --arch smp --encoder resnet34` (ImageNet weights, encoder learning rate x `--encoder-lr-mult`).
+  3. Per-organelle choice of checkpoints and ensemble members: `score_official.py --groups`.
+  4. Loss aligned with the metric: `--pcc-weight`, `--ssim-norm`, `--loss-term-organelles`.
+  5. Checkpoint selection on held-out training studies with the official-style scorer: `--select-on heldout`.
+  6. Weight averaging: `--ema-decay`.
+  7. Ensemble and test-time augmentation: three base seeds with 8-fold TTA, official-style macro SSIM 0.4453 and PCC 0.6116 ([record](results/issue333/01_item7_ensemble_tta.md)). Run time on the Grand Challenge hardware is measured with `time_inference.py` before it goes into a submission.
 - Scores: `evaluate.py` is a local proxy and `official_metrics.py` an official-style reconstruction. Neither is an official challenge score. Decisions are taken on the official-style scorer, because the proxy was misleading in items 4 and 5.
 
 ## Pipeline
@@ -36,6 +44,12 @@ python eval_last.py --root OUT --prepared-dir /content/prepared --pairs-csv PAIR
 python score_official.py --checkpoint OUT/base_s42/best.pt --out OUT/base_s42/official --pairs-csv PAIRS_EXCLUDED
 python make_figures.py --run OUT/base_s42
 
+# follow-up task #333
+python train.py --out OUT/smp_r34_s42 --seed 42 --arch smp --encoder resnet34 --select-on heldout --prepared-dir /content/prepared --pairs-csv PAIRS_EXCLUDED --resume
+python score_official.py --checkpoint OUT/base_s42/best.pt OUT/base_s123/best.pt OUT/base_s456/best.pt --tta 8 --groups base3=0,1,2 --out OUT/ens --pairs-csv PAIRS_EXCLUDED
+python defocus_eval.py --checkpoint OUT/base_s42/best.pt --manifest data_manifest_full.csv --pairs-csv PAIRS_EXCLUDED --out OUT/defocus
+python time_inference.py --checkpoint OUT/base_s42/best.pt OUT/base_s123/best.pt OUT/base_s456/best.pt --tta 1 4 8
+
 # single image
 python infer.py --checkpoint best.pt --input IMAGE.tif --out PRED.ome.tiff
 ```
@@ -53,11 +67,13 @@ python infer.py --checkpoint best.pt --input IMAGE.tif --out PRED.ome.tiff
 | `check_duplicates.py` | Find duplicated target channels, write the pairs file without them |
 | `dataset.py` | Dataset: one transmitted-light plane to four fluorescence channels |
 | `prepare_dataset.py` | Build and restore the prepared (normalized, float16) dataset |
-| `unet.py` | U-Net model |
-| `train.py` | Training, checkpoint selection, final evaluation |
-| `predict.py` | Tiled full-image inference and local scoring |
+| `unet.py` | U-Net model and U-Net on a pretrained encoder (segmentation_models_pytorch) |
+| `train.py` | Training (loss terms, EMA, encoder learning rate), checkpoint selection (validation subset or held-out training studies), final evaluation |
+| `predict.py` | Tiled full-image inference with test-time augmentation, local scoring |
 | `evaluate.py` | Local proxy metrics (SSIM, PCC) |
-| `official_metrics.py`, `score_official.py` | Official-style metrics and rescoring of a checkpoint |
+| `official_metrics.py`, `score_official.py` | Official-style metrics, rescoring of checkpoints, ensembles and member groups, with TTA |
+| `defocus_eval.py` | Sensitivity of a model to the focal plane of the input |
+| `time_inference.py` | Run time and memory of the container prediction for an ensemble and TTA setting |
 | `baseline_constant.py` | Constant control (training-set mean per organelle) |
 | `eval_last.py`, `aggregate_w3.py`, `w3_inspect.py` | Week 3 analysis: last epoch, aggregation over seeds, scores by modality and study |
 | `compare_output_scale.py`, `compare_blending.py`, `proxy_ceiling.py` | Review items 2, 3 and 4 |
