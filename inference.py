@@ -14,8 +14,14 @@ The pixel type in the copied OME-XML is set to the written type. Note: panimg, w
 Challenge, builds a DZI preview with libvips. A local test with libvips 8.15 aborted on uint16 and float32 outputs and
 passed on uint8, so the float32 mode must be checked on Grand Challenge itself before it is submitted.
 
-Weights: the first *.pt file in /opt/ml/model (the model tarball uploaded to Grand Challenge), else in ./resources.
-A file may hold a full training checkpoint ({"model", "cfg", ...}) or a bare state_dict.
+Weights: every *.pt file in /opt/ml/model (the model tarball uploaded to Grand Challenge), else in ./resources. A file
+may hold a full training checkpoint ({"model", "cfg", ...}) or a bare state_dict. Several files are an ensemble: the
+predictions are averaged in [0, 1] before the output mapping.
+
+Tiling and test-time augmentation (environment variables):
+  LMC2_WINDOW   tile blending weight, hann (default) or linear (the v0.1.0 behaviour), see predict.py.
+  LMC2_OVERLAP  tile overlap in px, 128 by default (v0.1.0: 64).
+  LMC2_TTA      1 (default, none), 4 (flips) or 8 (flips and 90-degree rotations), averaged per model.
 """
 import json
 import os
@@ -31,12 +37,15 @@ import xmltodict
 from config import ORGANELLES, ChallengeConfig
 from dataset import normalize
 from ome_utils import OUTPUT_TYPES, ome_with_type
-from predict import predict_full
+from predict import TTA_TRANSFORMS, WINDOWS, predict_tta
 from unet import UNet
 
 INPUT_DIR = Path(os.environ.get("LMC2_INPUT", "/input")) / "images" / "organelles-transmitted-light-ome-tiff"
 OUTPUT_ROOT = Path(os.environ.get("LMC2_OUTPUT", "/output")) / "images"
 OUTPUT_MODE = os.environ.get("LMC2_OUTPUT_MODE", "uint8")
+WINDOW = os.environ.get("LMC2_WINDOW", "hann")
+OVERLAP = int(os.environ.get("LMC2_OVERLAP", "128"))
+N_TTA = int(os.environ.get("LMC2_TTA", "1"))
 SCALE_FILE = Path(__file__).resolve().parent / "output_scale.json"
 MODEL_DIRS = [Path(os.environ.get("LMC2_MODEL_DIR", "/opt/ml/model")), Path(__file__).resolve().parent / "resources"]
 # Network output order (config.ORGANELLES): Nucleus, Mitochondria, Tubulin, Actin
@@ -49,12 +58,11 @@ def find_weights():
         if d.is_dir():
             found = sorted(d.rglob("*.pt"))
             if found:
-                return found[0]
+                return found
     raise FileNotFoundError(f"no *.pt weights in {[str(d) for d in MODEL_DIRS]}")
 
 
-def load_model(device):
-    path = find_weights()
+def load_model(path, device):
     ck = torch.load(path, map_location=device, weights_only=False)
     state = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
     cfg = ck.get("cfg", {}) if isinstance(ck, dict) else {}
@@ -65,6 +73,14 @@ def load_model(device):
     model.eval()
     print(f"weights {path} | epoch {ck.get('epoch') if isinstance(ck, dict) else 'n/a'} | device {device}", flush=True)
     return model
+
+
+def predict_ensemble(models, x, cfg):
+    acc = None
+    for model in models:
+        p = predict_tta(model, x, cfg.tile_size, OVERLAP, window=WINDOW, n_tta=N_TTA)
+        acc = p if acc is None else acc + p
+    return acc / len(models)
 
 
 def read_image(path):
@@ -111,11 +127,15 @@ def save_image(path, array, ome):
 def run():
     if OUTPUT_MODE not in OUTPUT_TYPES:
         raise ValueError(f"LMC2_OUTPUT_MODE must be one of {sorted(OUTPUT_TYPES)}, got {OUTPUT_MODE!r}")
+    if WINDOW not in WINDOWS:
+        raise ValueError(f"LMC2_WINDOW must be one of {WINDOWS}, got {WINDOW!r}")
+    if N_TTA not in TTA_TRANSFORMS:
+        raise ValueError(f"LMC2_TTA must be one of {sorted(TTA_TRANSFORMS)}, got {N_TTA}")
     scale = load_scale()
-    print(f"output mode {OUTPUT_MODE}", flush=True)
     cfg = ChallengeConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = load_model(device)
+    models = [load_model(p, device) for p in find_weights()]
+    print(f"output mode {OUTPUT_MODE} | models {len(models)} | window {WINDOW} | overlap {OVERLAP} | tta {N_TTA}", flush=True)
     files = sorted(p for p in INPUT_DIR.iterdir() if p.suffix.lower() in (".tif", ".tiff"))
     if not files:
         raise FileNotFoundError(f"no input images in {INPUT_DIR}")
@@ -125,7 +145,7 @@ def run():
         t0 = time.time()
         raw, ome = read_image(path)
         x = torch.from_numpy(normalize(raw.astype(np.float32), cfg.p_low, cfg.p_high))[None, None].to(device)
-        pred = predict_full(model, x, cfg.tile_size, cfg.tile_overlap)
+        pred = predict_ensemble(models, x, cfg)
         assert pred.shape == (4,) + raw.shape, f"prediction shape {pred.shape} for input {raw.shape}"
         out_ome = ome_with_type(ome, *OUTPUT_TYPES[OUTPUT_MODE][1:])
         for k, organelle in enumerate(OUTPUT_ORDER):

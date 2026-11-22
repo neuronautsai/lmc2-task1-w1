@@ -71,6 +71,30 @@ def predict_full(model, x, tile=512, overlap=64, factor=16, mod=None, window="li
     return (out / acc)[:, :h, :w].cpu().numpy()
 
 
+# Test-time augmentation: (number of 90-degree rotations, horizontal flip). 8 = all flips and rotations,
+# 4 = flips only (identity, horizontal, vertical, both), 1 = no augmentation.
+TTA_TRANSFORMS = {1: [(0, False)],
+                  4: [(0, False), (0, True), (2, False), (2, True)],
+                  8: [(k, f) for k in range(4) for f in (False, True)]}
+
+
+def predict_tta(model, x, tile=512, overlap=64, mod=None, window="linear", n_tta=1):
+    """predict_full averaged over the TTA_TRANSFORMS[n_tta] variants of the input, each mapped back before averaging."""
+    if n_tta not in TTA_TRANSFORMS:
+        raise ValueError(f"n_tta must be one of {sorted(TTA_TRANSFORMS)}, got {n_tta}")
+    acc = None
+    for k, flip in TTA_TRANSFORMS[n_tta]:
+        xt = torch.rot90(x, k, dims=(2, 3))
+        if flip:
+            xt = torch.flip(xt, dims=(3,))
+        p = predict_full(model, xt.contiguous(), tile, overlap, mod=mod, window=window)
+        if flip:
+            p = p[:, :, ::-1]
+        p = np.rot90(p, -k, axes=(1, 2))
+        acc = p.copy() if acc is None else acc + p
+    return np.ascontiguousarray(acc / len(TTA_TRANSFORMS[n_tta]), dtype=np.float32)
+
+
 def evaluate_model(model, dataset, cfg, device, indices=None, label="true"):
     """Score full validation images. Returns (per image-channel DataFrame, seconds per image).
     label: "true" gives a conditioned model the real modality, "unknown" withholds it. Ignored by an unconditioned model."""

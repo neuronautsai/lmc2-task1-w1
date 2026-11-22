@@ -27,7 +27,7 @@ from config import MODALITIES, ORGANELLES, ChallengeConfig
 from dataset import LMC2Dataset
 from evaluate import score_image
 from official_metrics import METRIC_COLUMNS, official_metrics
-from predict import WINDOWS, predict_full
+from predict import WINDOWS, predict_tta
 from unet import unet_from_checkpoint
 
 
@@ -41,24 +41,6 @@ def retry(fn, tries=6, wait=5.0):
                 raise
             print(f"read failed ({e}), retry {k + 1}/{tries - 1}", flush=True)
             time.sleep(wait * (k + 1))
-
-
-def predict_tta(model, x, tile, overlap, mod, window, tta):
-    """Prediction of one model, optionally averaged over the 8 flips and 90-degree rotations of the input."""
-    if not tta:
-        return predict_full(model, x, tile, overlap, mod=mod, window=window)
-    acc = None
-    for k in range(4):
-        for flip in (False, True):
-            xt = torch.rot90(x, k, dims=(2, 3))
-            if flip:
-                xt = torch.flip(xt, dims=(3,))
-            p = predict_full(model, xt.contiguous(), tile, overlap, mod=mod, window=window)
-            if flip:
-                p = p[:, :, ::-1]
-            p = np.rot90(p, -k, axes=(1, 2))
-            acc = p.copy() if acc is None else acc + p
-    return acc / 8.0
 
 
 def variant_name(path):
@@ -140,7 +122,7 @@ def main():
             mod = None
             if model.n_mod:
                 mod = item["modality_id"] if a.modality_label == "true" else model.n_mod - 1
-            preds[name] = predict_tta(model, x, cfg.tile_size, overlap, mod, a.window, a.tta)
+            preds[name] = predict_tta(model, x, cfg.tile_size, overlap, mod=mod, window=a.window, n_tta=8 if a.tta else 1)
         if not single:
             preds["ensemble"] = np.mean([preds[nm] for nm in names], axis=0)
         obs = item["observed"].numpy()

@@ -36,10 +36,12 @@ def make_inputs(input_root, model_dir):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from unet import UNet
     Path(model_dir).mkdir(parents=True, exist_ok=True)
-    torch.manual_seed(0)
-    torch.save({"model": UNet(base=32, n_mod=0).state_dict(), "epoch": 0, "cfg": {"base_channels": 32, "modality_mode": "none"}},
-               Path(model_dir) / "random_weights_for_ci.pt")
-    print(f"wrote {len(CASES)} inputs to {d} and random weights to {model_dir}")
+    for seed in (0, 1):  # two files: the container treats them as an ensemble
+        torch.manual_seed(seed)
+        torch.save({"model": UNet(base=32, n_mod=0).state_dict(), "epoch": 0,
+                    "cfg": {"base_channels": 32, "modality_mode": "none"}},
+                   Path(model_dir) / f"random_weights_for_ci_{seed}.pt")
+    print(f"wrote {len(CASES)} inputs to {d} and two random-weight checkpoints to {model_dir}")
 
 
 def run_panimg(output_root, previews):

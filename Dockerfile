@@ -14,7 +14,9 @@ RUN python -m pip install --user --no-cache-dir --no-color --requirement /opt/ap
 
 COPY --chown=user:user config.py dataset.py evaluate.py predict.py unet.py ome_utils.py inference.py output_scale.json /opt/app/
 
-# Output mode: float32 writes predictions on a typical raw target scale (see inference.py), uint8 is the v0.1.0 behaviour.
-ENV LMC2_OUTPUT_MODE=float32
+# Output mode: uint8 is the v0.1.0 behaviour, float32 writes predictions on a typical raw target scale (see inference.py).
+# Tiling: Hann window with 128 px overlap. TTA: 1 (none), 4 (flips) or 8 (flips and rotations). Every *.pt in the model
+# tarball is an ensemble member.
+ENV LMC2_OUTPUT_MODE=uint8 LMC2_WINDOW=hann LMC2_OVERLAP=128 LMC2_TTA=1
 
 ENTRYPOINT ["python", "inference.py"]
