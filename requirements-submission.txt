@@ -3,3 +3,4 @@ xmltodict
 scikit-image
 scipy
 pandas
+segmentation-models-pytorch==0.6.0

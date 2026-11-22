@@ -47,6 +47,18 @@ class ChallengeConfig:
     # SSIM term in the loss (review of Week 3, item 5): loss = (1 - w) * L1 + w * (1 - SSIM), SSIM computed like the local
     # proxy (skimage defaults: 7 x 7 uniform window, data range 1). w = 0 keeps the plain L1 loss of Weeks 2 and 3.
     ssim_weight: float = 0.0
+    # #333 options, defaults reproduce the runs above
+    arch: str = "unet"  # "unet" (the U-Net above) or "smp" (U-Net decoder on a pretrained encoder, item 2)
+    encoder_name: str = "resnet34"  # smp encoder, for example resnet34 or tu-convnext_tiny
+    encoder_weights: str | None = "imagenet"  # None or "none" trains the encoder from scratch
+    encoder_lr_mult: float = 0.1  # learning rate of the pretrained encoder relative to the decoder
+    ssim_norm: bool = False  # SSIM term on prediction and target normalized per crop like the official scorer (item 4)
+    pcc_weight: float = 0.0  # beta in loss + beta * (1 - PCC), PCC per observed crop channel (item 4)
+    loss_term_organelles: str = ""  # comma list (e.g. "Tubulin,Actin") that gets the SSIM and PCC terms, "" = all
+    select_on: str = "val_subset"  # "val_subset" (proxy SSIM on val_subset validation images, as before) or
+    # "heldout": official-style mean of macro SSIM and PCC on held-out training studies (item 5)
+    heldout_frac: float = 0.1  # share of training groups held out for checkpoint selection (GroupShuffleSplit, seed 42)
+    ema_decay: float = 0.0  # > 0 keeps an exponential moving average of the weights, used for selection and saving (item 6)
 
 
 def declared_rule(cfg):

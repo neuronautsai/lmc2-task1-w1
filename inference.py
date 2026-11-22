@@ -38,7 +38,7 @@ from config import ORGANELLES, ChallengeConfig
 from dataset import normalize
 from ome_utils import OUTPUT_TYPES, ome_with_type
 from predict import TTA_TRANSFORMS, WINDOWS, predict_tta
-from unet import UNet
+from unet import UNet, unet_from_checkpoint
 
 INPUT_DIR = Path(os.environ.get("LMC2_INPUT", "/input")) / "images" / "organelles-transmitted-light-ome-tiff"
 OUTPUT_ROOT = Path(os.environ.get("LMC2_OUTPUT", "/output")) / "images"
@@ -64,14 +64,18 @@ def find_weights():
 
 def load_model(path, device):
     ck = torch.load(path, map_location=device, weights_only=False)
-    state = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
-    cfg = ck.get("cfg", {}) if isinstance(ck, dict) else {}
-    if cfg.get("modality_mode", "none") != "none":
-        raise ValueError("this entry point serves the unconditioned U-Net only")
-    model = UNet(base=int(cfg.get("base_channels", 32)), n_mod=0).to(device)
-    model.load_state_dict({k: v.float() for k, v in state.items()})
-    model.eval()
-    print(f"weights {path} | epoch {ck.get('epoch') if isinstance(ck, dict) else 'n/a'} | device {device}", flush=True)
+    if isinstance(ck, dict) and "model" in ck and "cfg" in ck:
+        if ck["cfg"].get("modality_mode", "none") != "none":
+            raise ValueError("this entry point serves unconditioned models only")
+        ck["model"] = {k: v.float() for k, v in ck["model"].items()}
+        model = unet_from_checkpoint(ck, device)  # U-Net or pretrained-encoder U-Net, never downloads weights
+    else:  # bare state_dict of the Week 2 U-Net
+        state = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
+        model = UNet(base=32, n_mod=0).to(device)
+        model.load_state_dict({k: v.float() for k, v in state.items()})
+        model.eval()
+    print(f"weights {path} | epoch {ck.get('epoch') if isinstance(ck, dict) else 'n/a'} | "
+          f"{type(model).__name__} | device {device}", flush=True)
     return model
 
 

@@ -44,6 +44,7 @@ def predict_full(model, x, tile=512, overlap=64, factor=16, mod=None, window="li
     """x: (1, 1, H, W) tensor on the model device, mod: optional modality id (int) for a conditioned model.
     window: tile blending weight, see _window. Returns (4, H, W) float32 numpy array (the network output)."""
     mod_t = None if mod is None else torch.tensor([int(mod)], dtype=torch.long, device=x.device)
+    factor = max(factor, int(getattr(model, "factor", factor)))  # 32 for the pretrained-encoder U-Net
     _, _, h, w = x.shape
     ph, pw = (-h) % factor, (-w) % factor
     if ph or pw:

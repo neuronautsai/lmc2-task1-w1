@@ -70,11 +70,51 @@ class UNet(nn.Module):
         return x if self.out_act == "linear" else torch.sigmoid(x)
 
 
+class SmpUNet(nn.Module):
+    """U-Net decoder on a pretrained encoder from segmentation_models_pytorch (#333 item 2), one input channel (smp adapts
+    the first convolution by summing its weights over the RGB channels), four outputs, same output activation rule as
+    UNet. Inputs must be padded to a multiple of 32 (attribute factor, used by predict_full)."""
+
+    def __init__(self, encoder_name="resnet34", encoder_weights="imagenet", out_act="sigmoid"):
+        super().__init__()
+        import segmentation_models_pytorch as smp  # only needed for this architecture
+        if out_act not in ("sigmoid", "linear"):
+            raise ValueError(f"unknown out_act {out_act!r}")
+        self.net = smp.Unet(encoder_name=encoder_name, encoder_weights=encoder_weights, in_channels=1, classes=4)
+        self.out_act = out_act
+        if out_act == "linear":
+            self.register_buffer("linear_head", torch.ones(1))
+        self.factor = 32
+        self.n_mod = 0
+
+    def encoder_parameters(self):
+        return list(self.net.encoder.parameters())
+
+    def forward(self, x, mod=None):
+        x = self.net(x)
+        return x if self.out_act == "linear" else torch.sigmoid(x)
+
+
+def _get(cfg, key, default):
+    return cfg.get(key, default) if isinstance(cfg, dict) else getattr(cfg, key, default)
+
+
+def build_model(cfg, n_mod_values=4, pretrained=True):
+    """Model described by a config (ChallengeConfig or a checkpoint's cfg dict). pretrained=False never downloads
+    encoder weights (use it when the weights come from a checkpoint, as in the container)."""
+    out_act = _get(cfg, "output_activation", "sigmoid")
+    if _get(cfg, "arch", "unet") == "smp":
+        weights = _get(cfg, "encoder_weights", "imagenet")
+        return SmpUNet(_get(cfg, "encoder_name", "resnet34"),
+                       weights if (pretrained and weights not in (None, "None", "none")) else None, out_act)
+    n_mod = n_mod_values if _get(cfg, "modality_mode", "none") == "film" else 0
+    return UNet(base=int(_get(cfg, "base_channels", 32)), n_mod=n_mod, out_act=out_act)
+
+
 def unet_from_checkpoint(ck, device, n_mod_values=4):
-    """Build the U-Net described by a checkpoint's cfg (base channels, modality conditioning, output activation),
-    load its weights and return it in eval mode. n_mod_values: number of modality ids including the unknown token."""
-    cfg = ck["cfg"]
-    n_mod = n_mod_values if cfg.get("modality_mode") == "film" else 0
-    model = UNet(base=int(cfg.get("base_channels", 32)), n_mod=n_mod, out_act=cfg.get("output_activation", "sigmoid"))
+    """Build the model described by a checkpoint's cfg (architecture, base channels, modality conditioning, output
+    activation), load its weights and return it in eval mode. n_mod_values: number of modality ids including the
+    unknown token."""
+    model = build_model(ck["cfg"], n_mod_values, pretrained=False)
     model.load_state_dict(ck["model"])
     return model.to(device).eval()
