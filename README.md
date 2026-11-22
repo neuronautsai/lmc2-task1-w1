@@ -46,7 +46,7 @@ python make_figures.py --run OUT/base_s42
 
 # follow-up task #333
 python train.py --out OUT/smp_r34_s42 --seed 42 --arch smp --encoder resnet34 --select-on heldout --prepared-dir /content/prepared --pairs-csv PAIRS_EXCLUDED --resume
-python score_official.py --checkpoint OUT/base_s42/best.pt OUT/base_s123/best.pt OUT/base_s456/best.pt --tta 8 --groups base3=0,1,2 --out OUT/ens --pairs-csv PAIRS_EXCLUDED
+python score_official.py --checkpoint OUT/base_s42/best.pt OUT/base_s123/best.pt OUT/base_s456/best.pt --window hann --overlap 128 --tta --groups base3=0,1,2 --out OUT/ens --pairs-csv PAIRS_EXCLUDED
 python defocus_eval.py --checkpoint OUT/base_s42/best.pt --manifest data_manifest_full.csv --pairs-csv PAIRS_EXCLUDED --out OUT/defocus
 python time_inference.py --checkpoint OUT/base_s42/best.pt OUT/base_s123/best.pt OUT/base_s456/best.pt --tta 1 4 8
 
