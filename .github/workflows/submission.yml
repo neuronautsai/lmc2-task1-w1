@@ -14,15 +14,15 @@ jobs:
         run: docker build --platform linux/amd64 -t lmc2-task1 .
       - name: Synthetic inputs and random weights (file contract only, not prediction quality)
         run: |
-          mkdir -p ci/input ci/model ci/output ci/output_uint8 && chmod -R a+rwx ci
+          mkdir -p ci/input ci/model ci/output ci/output_f32 && chmod -R a+rwx ci
           docker run --rm --entrypoint python -v "$PWD":/w -w /w lmc2-task1 submission_check.py make-inputs ci/input ci/model
-      - name: Run the container offline, as on Grand Challenge (image default output mode, then uint8)
+      - name: Run the container offline, as on Grand Challenge (image defaults, then float32 output with 8-fold TTA)
         run: |
           docker run --rm --network none --memory 16g \
             -v "$PWD/ci/input":/input:ro -v "$PWD/ci/output":/output -v "$PWD/ci/model":/opt/ml/model:ro \
             lmc2-task1
-          docker run --rm --network none --memory 16g -e LMC2_OUTPUT_MODE=uint8 \
-            -v "$PWD/ci/input":/input:ro -v "$PWD/ci/output_uint8":/output -v "$PWD/ci/model":/opt/ml/model:ro \
+          docker run --rm --network none --memory 16g -e LMC2_OUTPUT_MODE=float32 -e LMC2_TTA=8 \
+            -v "$PWD/ci/input":/input:ro -v "$PWD/ci/output_f32":/output -v "$PWD/ci/model":/opt/ml/model:ro \
             lmc2-task1
       - uses: actions/setup-python@v5
         with:
@@ -31,4 +31,4 @@ jobs:
         run: |
           pip install -q panimg pyvips-binary tifffile numpy
           python submission_check.py check-outputs ci/input ci/output
-          python submission_check.py check-outputs ci/input ci/output_uint8
+          python submission_check.py check-outputs ci/input ci/output_f32
