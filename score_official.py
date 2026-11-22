@@ -4,7 +4,9 @@ Usage: python score_official.py --checkpoint OUT_RUN/best.pt --out OUT_SCORE [--
        python score_official.py --checkpoint RUN_A/best.pt RUN_B/best.pt RUN_C/best.pt --out OUT_SCORE --window hann --overlap 128
 
 Several checkpoints: every model and the mean of their predictions (ensemble) are scored in one pass, each in its own
-subfolder of --out (named after the run folder and the checkpoint file, plus "ensemble"). --tta averages each model
+subfolder of --out (named after the run folder and the checkpoint file, plus "ensemble"). --groups NAME=0,1,2 (indices
+into --checkpoint) scores named member subsets instead of the single "ensemble", and the per-organelle table then shows
+which variant is best for each organelle (mean of SSIM and PCC), for per-organelle member selection. --tta averages each model
 over the 8 flips and 90-degree rotations of the input. --window and --overlap set the tile blending (default: the
 Week 2 and 3 setting, linear with 64 px).
 
@@ -69,6 +71,7 @@ def main():
     ap.add_argument("--window", choices=WINDOWS, default="linear", help="tile blending weight (see predict.py)")
     ap.add_argument("--overlap", type=int, default=None, help="tile overlap in px (default: config tile_overlap)")
     ap.add_argument("--tta", action="store_true", help="average over the 8 flips and 90-degree rotations")
+    ap.add_argument("--groups", nargs="*", default=[], help="named ensembles NAME=i,j,... of --checkpoint indices")
     a = ap.parse_args()
     kw = {}
     if a.data_root:
@@ -86,7 +89,15 @@ def main():
     names = [variant_name(c) for c in a.checkpoint]
     assert len(set(names)) == len(names), f"checkpoint names must be unique: {names}"
     single = len(models) == 1
-    variants = names if single else names + ["ensemble"]
+    groups = {}
+    for g in a.groups:
+        gname, idx = g.split("=")
+        groups[gname] = [int(i) for i in idx.split(",")]
+        assert gname not in names and all(0 <= i < len(models) for i in groups[gname]), f"bad group {g}"
+    assert not (single and groups), "--groups needs several checkpoints"
+    if not groups and not single:
+        groups = {"ensemble": list(range(len(models)))}
+    variants = names + list(groups)
     ds = LMC2Dataset(cfg, "val", train=False)
     idxs = range(len(ds)) if not a.subset else range(min(a.subset, len(ds)))
     out = Path(a.out)
@@ -123,8 +134,8 @@ def main():
             if model.n_mod:
                 mod = item["modality_id"] if a.modality_label == "true" else model.n_mod - 1
             preds[name] = predict_tta(model, x, cfg.tile_size, overlap, mod=mod, window=a.window, n_tta=8 if a.tta else 1)
-        if not single:
-            preds["ensemble"] = np.mean([preds[nm] for nm in names], axis=0)
+        for gname, idx in groups.items():
+            preds[gname] = np.mean([preds[names[i]] for i in idx], axis=0)
         obs = item["observed"].numpy()
         raws = {}
         for k, organelle in enumerate(ORGANELLES):
@@ -153,7 +164,7 @@ def main():
 
     pd.set_option("display.width", 200)
     cols = ["proxy_ssim", "proxy_pcc", *METRIC_COLUMNS]
-    overview = {}
+    overview, per_org = {}, {}
     for v in variants:
         df = pd.DataFrame(rows[v])
         o = outs[v]
@@ -169,12 +180,13 @@ def main():
         macro = {c: float(df.groupby("organelle")[c].mean().reindex(ORGANELLES).mean()) for c in cols}
         undefined = {c: int(df[c].isna().sum()) for c in cols}
         inv = invariance_check(raw_keep[v], pred_keep[v], 5)
-        is_ens = v == "ensemble"
-        cks = a.checkpoint if is_ens else [a.checkpoint[names.index(v)]]
-        uses_mod = any(m.n_mod for m in (models if is_ens else [models[names.index(v)]]))
-        info = {"checkpoint": cks[0] if len(cks) == 1 else cks,
+        is_ens = v in groups
+        members = groups[v] if is_ens else [names.index(v)]
+        cks = [a.checkpoint[i] for i in members]
+        uses_mod = any(models[i].n_mod for i in members)
+        info = {"checkpoint": cks[0] if not is_ens else cks,
                 "modality_label": a.modality_label if uses_mod else "not used",
-                "epoch": epochs[names.index(v)] if not is_ens else epochs,
+                "epoch": epochs[members[0]] if not is_ens else [epochs[i] for i in members],
                 "window": a.window, "overlap": overlap, "tta": a.tta,
                 "n_images": len(idxs), "n_rows": len(df),
                 "macro_over_organelles": macro, "undefined_counts": undefined,
@@ -183,6 +195,7 @@ def main():
                                "MAE, cosine and Euclidean definitions assumed, see official_metrics.py"}
         json.dump(info, open(o / "official_score_info.json", "w"), indent=2)
         overview[v] = macro
+        per_org[v] = df.groupby("organelle")[["off_ssim_dr1", "off_pcc"]].mean().reindex(ORGANELLES)
         print(f"===== {v}")
         print(summ.round(4).to_string())
         print(json.dumps(info, indent=2))
@@ -191,6 +204,13 @@ def main():
         ov.to_csv(out / "overview_macro.csv")
         print("===== macro over organelles, all variants")
         print(ov.round(4).to_string())
+        po = pd.concat({v: per_org[v] for v in variants}, axis=1)
+        po.to_csv(out / "per_organelle_variants.csv")
+        print("===== per organelle SSIM (data range 1) and PCC, all variants")
+        print(po.round(4).to_string())
+        score = pd.DataFrame({v: (per_org[v].off_ssim_dr1 + per_org[v].off_pcc) / 2 for v in variants})
+        print("===== best variant per organelle (mean of SSIM and PCC on this split, so the choice is optimistic)")
+        print(pd.DataFrame({"best": score.idxmax(axis=1), "score": score.max(axis=1).round(4)}).to_string())
 
 
 if __name__ == "__main__":
