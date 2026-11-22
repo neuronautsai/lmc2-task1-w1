@@ -10,6 +10,9 @@ which variant is best for each organelle (mean of SSIM and PCC), for per-organel
 over the 8 flips and 90-degree rotations of the input. --window and --overlap set the tile blending (default: the
 Week 2 and 3 setting, linear with 64 px).
 
+--split heldout --heldout-json RUN/heldout_studies.json scores the training studies a run held out for checkpoint
+selection instead of the validation split, so member choices can be made without the reported images.
+
 Inputs are read from the raw TIFFs with the declared rule (as in the Week 2 run), predictions come from the tiled
 model, and the ground truth for the official-style metrics is the RAW target image. The current proxy columns
 (proxy_ssim, proxy_pcc) are computed in the same pass on the normalized target, so they can be compared with the
@@ -26,7 +29,7 @@ import tifffile
 import torch
 
 from config import MODALITIES, ORGANELLES, ChallengeConfig
-from dataset import LMC2Dataset
+from dataset import eval_dataset
 from evaluate import score_image
 from official_metrics import METRIC_COLUMNS, official_metrics
 from predict import WINDOWS, predict_tta
@@ -72,6 +75,9 @@ def main():
     ap.add_argument("--overlap", type=int, default=None, help="tile overlap in px (default: config tile_overlap)")
     ap.add_argument("--tta", action="store_true", help="average over the 8 flips and 90-degree rotations")
     ap.add_argument("--groups", nargs="*", default=[], help="named ensembles NAME=i,j,... of --checkpoint indices")
+    ap.add_argument("--split", choices=["val", "heldout"], default="val",
+                    help="heldout: the held-out training studies of --heldout-json (for choices made without the val split)")
+    ap.add_argument("--heldout-json", default=None, help="heldout_studies.json written by train.py --select-on heldout")
     a = ap.parse_args()
     kw = {}
     if a.data_root:
@@ -98,7 +104,7 @@ def main():
     if not groups and not single:
         groups = {"ensemble": list(range(len(models)))}
     variants = names + list(groups)
-    ds = LMC2Dataset(cfg, "val", train=False)
+    ds = eval_dataset(cfg, a.split, a.heldout_json)
     idxs = range(len(ds)) if not a.subset else range(min(a.subset, len(ds)))
     out = Path(a.out)
     outs = {v: out if single else out / v for v in variants}
@@ -187,7 +193,7 @@ def main():
         info = {"checkpoint": cks[0] if not is_ens else cks,
                 "modality_label": a.modality_label if uses_mod else "not used",
                 "epoch": epochs[members[0]] if not is_ens else [epochs[i] for i in members],
-                "window": a.window, "overlap": overlap, "tta": a.tta,
+                "window": a.window, "overlap": overlap, "tta": a.tta, "split": a.split, "heldout_json": a.heldout_json,
                 "n_images": len(idxs), "n_rows": len(df),
                 "macro_over_organelles": macro, "undefined_counts": undefined,
                 "max_abs_change_under_affine_rescaling_of_prediction": inv,
@@ -209,7 +215,8 @@ def main():
         print("===== per organelle SSIM (data range 1) and PCC, all variants")
         print(po.round(4).to_string())
         score = pd.DataFrame({v: (per_org[v].off_ssim_dr1 + per_org[v].off_pcc) / 2 for v in variants})
-        print("===== best variant per organelle (mean of SSIM and PCC on this split, so the choice is optimistic)")
+        print("===== best variant per organelle (mean of SSIM and PCC on this split"
+              + (", so the choice is optimistic)" if a.split == "val" else ", held-out training studies)"))
         print(pd.DataFrame({"best": score.idxmax(axis=1), "score": score.max(axis=1).round(4)}).to_string())
 
 

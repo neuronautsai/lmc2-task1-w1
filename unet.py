@@ -75,12 +75,12 @@ class SmpUNet(nn.Module):
     the first convolution by summing its weights over the RGB channels), four outputs, same output activation rule as
     UNet. Inputs must be padded to a multiple of 32 (attribute factor, used by predict_full)."""
 
-    def __init__(self, encoder_name="resnet34", encoder_weights="imagenet", out_act="sigmoid"):
+    def __init__(self, encoder_name="resnet34", encoder_weights="imagenet", out_act="sigmoid", in_ch=1):
         super().__init__()
         import segmentation_models_pytorch as smp  # only needed for this architecture
         if out_act not in ("sigmoid", "linear"):
             raise ValueError(f"unknown out_act {out_act!r}")
-        self.net = smp.Unet(encoder_name=encoder_name, encoder_weights=encoder_weights, in_channels=1, classes=4)
+        self.net = smp.Unet(encoder_name=encoder_name, encoder_weights=encoder_weights, in_channels=in_ch, classes=4)
         self.out_act = out_act
         if out_act == "linear":
             self.register_buffer("linear_head", torch.ones(1))
@@ -103,12 +103,19 @@ def build_model(cfg, n_mod_values=4, pretrained=True):
     """Model described by a config (ChallengeConfig or a checkpoint's cfg dict). pretrained=False never downloads
     encoder weights (use it when the weights come from a checkpoint, as in the container)."""
     out_act = _get(cfg, "output_activation", "sigmoid")
+    extra = _get(cfg, "extra_input", "") or ""
+    if extra not in ("", "bm3d"):
+        raise ValueError(f"unknown extra_input {extra!r}")
+    in_ch = 2 if extra else 1
     if _get(cfg, "arch", "unet") == "smp":
         weights = _get(cfg, "encoder_weights", "imagenet")
-        return SmpUNet(_get(cfg, "encoder_name", "resnet34"),
-                       weights if (pretrained and weights not in (None, "None", "none")) else None, out_act)
-    n_mod = n_mod_values if _get(cfg, "modality_mode", "none") == "film" else 0
-    return UNet(base=int(_get(cfg, "base_channels", 32)), n_mod=n_mod, out_act=out_act)
+        model = SmpUNet(_get(cfg, "encoder_name", "resnet34"),
+                        weights if (pretrained and weights not in (None, "None", "none")) else None, out_act, in_ch)
+    else:
+        n_mod = n_mod_values if _get(cfg, "modality_mode", "none") == "film" else 0
+        model = UNet(in_ch=in_ch, base=int(_get(cfg, "base_channels", 32)), n_mod=n_mod, out_act=out_act)
+    model.in_ch, model.extra_input = in_ch, extra  # predict.py adds the extra channel when it gets a 1-channel input
+    return model
 
 
 def unet_from_checkpoint(ck, device, n_mod_values=4):

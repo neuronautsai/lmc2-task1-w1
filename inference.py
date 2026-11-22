@@ -18,6 +18,14 @@ Weights: every *.pt file in /opt/ml/model (the model tarball uploaded to Grand C
 may hold a full training checkpoint ({"model", "cfg", ...}) or a bare state_dict. Several files are an ensemble: the
 predictions are averaged in [0, 1] before the output mapping.
 
+Optional files next to the weights:
+  members.json      {"Nucleus": ["a.pt", "b.pt"], ...}: the weight files averaged for each organelle (#333 item 3).
+                    Organelles not listed use every weight file. Names are paths relative to the weights folder.
+  postprocess.json  per-organelle post-processing applied in [0, 1] before the output mapping (#333 item 9), same
+                    format as postprocess.py writes (postprocess_selected.json).
+For each input the log also records the z position fields of the OME-XML and a sharpness value (variance of the
+Laplacian of the normalized input), for the focal-plane check of #333 item 1.
+
 Tiling and test-time augmentation (environment variables):
   LMC2_WINDOW   tile blending weight, hann (default) or linear (the v0.1.0 behaviour), see predict.py.
   LMC2_OVERLAP  tile overlap in px, 128 by default (v0.1.0: 64).
@@ -37,6 +45,7 @@ import xmltodict
 from config import ORGANELLES, ChallengeConfig
 from dataset import normalize
 from ome_utils import OUTPUT_TYPES, ome_with_type
+from postprocess import apply_all, check_plan
 from predict import TTA_TRANSFORMS, WINDOWS, predict_tta
 from unet import UNet, unet_from_checkpoint
 
@@ -58,8 +67,43 @@ def find_weights():
         if d.is_dir():
             found = sorted(d.rglob("*.pt"))
             if found:
-                return found
+                return d, found
     raise FileNotFoundError(f"no *.pt weights in {[str(d) for d in MODEL_DIRS]}")
+
+
+def load_plan(model_dir, weights):
+    """Members per organelle (indices into weights) and post-processing settings, from the optional JSON files."""
+    names = [str(p.relative_to(model_dir)) for p in weights]
+    members = {o: list(range(len(weights))) for o in OUTPUT_ORDER}
+    f = model_dir / "members.json"
+    if f.exists():
+        for organelle, files in json.load(open(f)).items():
+            if organelle not in OUTPUT_ORDER:
+                raise ValueError(f"members.json: unknown organelle {organelle!r}")
+            missing = [n for n in files if n not in names]
+            if missing or not files:
+                raise ValueError(f"members.json: {organelle} lists {files}, weight files are {names}")
+            members[organelle] = [names.index(n) for n in files]
+    f = model_dir / "postprocess.json"
+    plan = check_plan(json.load(open(f))) if f.exists() else {}
+    return names, members, plan
+
+
+def focus_info(ome, x):
+    """z fields of the first OME Plane and Pixels, and the variance of the Laplacian of the normalized input."""
+    info = {}
+    try:
+        pixels = xmltodict.parse(ome)["OME"]["Image"]["Pixels"]
+        info["SizeZ"] = pixels.get("@SizeZ")
+        plane = pixels.get("Plane")
+        plane = plane[0] if isinstance(plane, list) else plane
+        if isinstance(plane, dict):
+            info.update({k[1:]: v for k, v in plane.items() if k in ("@TheZ", "@PositionZ", "@PositionZUnit")})
+    except Exception as e:  # the log entry must never stop the prediction
+        info["ome_error"] = type(e).__name__
+    lap = x[:-2, 1:-1] + x[2:, 1:-1] + x[1:-1, :-2] + x[1:-1, 2:] - 4 * x[1:-1, 1:-1]
+    info["laplacian_var"] = round(float(lap.var()), 6)
+    return info
 
 
 def load_model(path, device):
@@ -79,12 +123,16 @@ def load_model(path, device):
     return model
 
 
-def predict_ensemble(models, x, cfg):
-    acc = None
-    for model in models:
-        p = predict_tta(model, x, cfg.tile_size, OVERLAP, window=WINDOW, n_tta=N_TTA)
-        acc = p if acc is None else acc + p
-    return acc / len(models)
+def predict_ensemble(models, x, cfg, members=None):
+    """Mean prediction in [0, 1]. members: {organelle: [model indices]}, default every model for every organelle."""
+    used = sorted({i for idx in (members or {}).values() for i in idx}) if members else list(range(len(models)))
+    preds = {i: predict_tta(models[i], x, cfg.tile_size, OVERLAP, window=WINDOW, n_tta=N_TTA) for i in used}
+    if not members:
+        return np.mean([preds[i] for i in used], axis=0)
+    out = np.empty_like(preds[used[0]])
+    for k, organelle in enumerate(OUTPUT_ORDER):
+        out[k] = np.mean([preds[i][k] for i in members[organelle]], axis=0)
+    return out
 
 
 def read_image(path):
@@ -138,8 +186,12 @@ def run():
     scale = load_scale()
     cfg = ChallengeConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    models = [load_model(p, device) for p in find_weights()]
+    model_dir, weights = find_weights()
+    models = [load_model(p, device) for p in weights]
+    names, members, plan = load_plan(model_dir, weights)
     print(f"output mode {OUTPUT_MODE} | models {len(models)} | window {WINDOW} | overlap {OVERLAP} | tta {N_TTA}", flush=True)
+    print("members per organelle:", json.dumps({o: [names[i] for i in m] for o, m in members.items()}), flush=True)
+    print("post-processing:", json.dumps(plan) if plan else "none", flush=True)
     files = sorted(p for p in INPUT_DIR.iterdir() if p.suffix.lower() in (".tif", ".tiff"))
     if not files:
         raise FileNotFoundError(f"no input images in {INPUT_DIR}")
@@ -148,8 +200,12 @@ def run():
     for path in files:
         t0 = time.time()
         raw, ome = read_image(path)
-        x = torch.from_numpy(normalize(raw.astype(np.float32), cfg.p_low, cfg.p_high))[None, None].to(device)
-        pred = predict_ensemble(models, x, cfg)
+        xn = normalize(raw.astype(np.float32), cfg.p_low, cfg.p_high)
+        print(f"{path.name} focus {json.dumps(focus_info(ome, xn))}", flush=True)
+        x = torch.from_numpy(xn)[None, None].to(device)
+        pred = predict_ensemble(models, x, cfg, members)
+        if plan:
+            pred = apply_all(pred, plan)
         assert pred.shape == (4,) + raw.shape, f"prediction shape {pred.shape} for input {raw.shape}"
         out_ome = ome_with_type(ome, *OUTPUT_TYPES[OUTPUT_MODE][1:])
         for k, organelle in enumerate(OUTPUT_ORDER):

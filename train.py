@@ -18,6 +18,8 @@ only what is passed on the command line. run_info.json records the package and C
   --ema-decay 0.999                  exponential moving average of the weights, used for selection and saved checkpoints
   --pcc-weight 0.1 --ssim-norm       loss terms aligned with the official metric, optionally only for
   --loss-term-organelles Tubulin,Actin
+  --ssl-checkpoint SSL/ssl_encoder.pt  encoder weights from ssl_pretrain.py loaded before training (Run B, --arch smp)
+  --extra-input bm3d --extra-input-dir DIR   BM3D-denoised input as a second channel (item 11, bm3d_input.py build)
 """
 import argparse
 import copy
@@ -46,7 +48,7 @@ from unet import build_model
 
 SPLIT_MANIFEST = Path(os.environ.get("LMC2_SPLIT_MANIFEST", Path(__file__).resolve().parent / "results" / "split_manifest.csv"))
 
-PATH_FIELDS = ("data_root", "pairs_csv", "output_dir", "prepared_dir", "train_prepared_dir")
+PATH_FIELDS = ("data_root", "pairs_csv", "output_dir", "prepared_dir", "train_prepared_dir", "extra_input_dir")
 
 
 def observed_channel_l1(prediction, target, observed):
@@ -221,6 +223,9 @@ def main():
     ap.add_argument("--select-on", choices=["val_subset", "heldout"], default=None)
     ap.add_argument("--heldout-frac", type=float, default=None)
     ap.add_argument("--ema-decay", type=float, default=None)
+    ap.add_argument("--ssl-checkpoint", default=None, help="ssl_encoder.pt from ssl_pretrain.py (--arch smp)")
+    ap.add_argument("--extra-input", choices=["none", "bm3d"], default=None)
+    ap.add_argument("--extra-input-dir", default=None, help="folder written by bm3d_input.py build")
     a = ap.parse_args()
 
     over = {k: v for k, v in dict(
@@ -236,7 +241,9 @@ def main():
         output_activation=a.output_activation, ssim_weight=a.ssim_weight, arch=a.arch, encoder_name=a.encoder,
         encoder_weights=a.encoder_weights, encoder_lr_mult=a.encoder_lr_mult, ssim_norm=a.ssim_norm,
         pcc_weight=a.pcc_weight, loss_term_organelles=a.loss_term_organelles, select_on=a.select_on,
-        heldout_frac=a.heldout_frac, ema_decay=a.ema_decay).items() if v is not None}
+        heldout_frac=a.heldout_frac, ema_decay=a.ema_decay, ssl_checkpoint=a.ssl_checkpoint,
+        extra_input=None if a.extra_input is None else ("" if a.extra_input == "none" else a.extra_input),
+        extra_input_dir=Path(a.extra_input_dir) if a.extra_input_dir else None).items() if v is not None}
     base_cfg = config_from(a.config_from) if a.config_from else ChallengeConfig()
     if a.prepared_dir and a.prepared_dir.lower() == "none":
         over["prepared_dir"] = None  # read the raw TIFFs even if the copied config names a prepared folder
@@ -284,6 +291,14 @@ def main():
     if cfg.arch == "smp" and n_mod:
         raise SystemExit("modality conditioning is only implemented for --arch unet")
     model = build_model(cfg, len(MODALITIES) + 1, pretrained=True).to(device)
+    if cfg.ssl_checkpoint:
+        if cfg.arch != "smp":
+            raise SystemExit("--ssl-checkpoint needs --arch smp")
+        sck = torch.load(cfg.ssl_checkpoint, map_location=device, weights_only=False)
+        if sck["info"]["encoder"] != cfg.encoder_name:
+            raise SystemExit(f"SSL encoder {sck['info']['encoder']} differs from --encoder {cfg.encoder_name}")
+        model.net.encoder.load_state_dict(sck["encoder"], strict=True)
+        print(f"encoder weights from {cfg.ssl_checkpoint} ({sck['info']['steps']} SSL steps)", flush=True)
     if cfg.arch == "smp":
         enc = {id(p) for p in model.encoder_parameters()}
         groups = [{"params": [p for p in model.parameters() if id(p) in enc], "base_lr": cfg.learning_rate * cfg.encoder_lr_mult},

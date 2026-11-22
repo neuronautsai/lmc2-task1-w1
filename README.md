@@ -15,13 +15,19 @@ The work is reported in the task issue (itu-biai/dlct-docs #323). A copy of ever
   4. Training targets p2 to p99.8 without clipping: no gain on the official-style scorer.
   5. SSIM term in the loss: lower PCC and higher errors on the official-style scorer over seeds 42 and 123, not adopted.
 - Follow-up task #333 (code in place, runs pending unless a result is linked):
-  1. Focal plane of the inputs: `defocus_eval.py` scores the validation images with the transmitted-light slice at best focus + d.
-  2. Pretrained encoder: `train.py --arch smp --encoder resnet34` (ImageNet weights, encoder learning rate x `--encoder-lr-mult`).
-  3. Per-organelle choice of checkpoints and ensemble members: `score_official.py --groups`.
+  1. Focal plane of the inputs: `defocus_eval.py` scores the validation images with the transmitted-light slice at best focus + d. The container logs the OME-XML z fields and a sharpness value of every input.
+  2. Pretrained encoder: `train.py --arch smp --encoder resnet34` (ImageNet weights, encoder learning rate x `--encoder-lr-mult`). Run B: `ssl_pretrain.py` (masked-image pretraining on the training-split transmitted-light slices), then `train.py --ssl-checkpoint`.
+  3. Per-organelle choice of checkpoints and ensemble members: `score_official.py --groups` (`--split heldout` scores held-out training studies), deployed with `members.json` next to the weights.
   4. Loss aligned with the metric: `--pcc-weight`, `--ssim-norm`, `--loss-term-organelles`.
   5. Checkpoint selection on held-out training studies with the official-style scorer: `--select-on heldout`.
   6. Weight averaging: `--ema-decay`.
   7. Ensemble and test-time augmentation: three base seeds with 8-fold TTA, official-style macro SSIM 0.4453 and PCC 0.6116 ([record](results/issue333/01_item7_ensemble_tta.md)). Run time on the Grand Challenge hardware is measured with `time_inference.py` before it goes into a submission.
+  8. Modality: `modality_report.py` gives official-style scores per modality, `--modality film` conditions the U-Net.
+  9. Post-processing per organelle (TV, background offset, gamma): `postprocess.py` sweep, deployed with `postprocess.json` next to the weights.
+  10. Patch size: `train.py --patch-size 128`.
+  11. BM3D-denoised input as a second channel: `bm3d_input.py time` and `build`, then `train.py --extra-input bm3d`.
+  12. Literature review: [`results/literature_review.md`](results/literature_review.md).
+  - Fixed example set of #323 for any runs: `example_grid.py`.
 - Scores: `evaluate.py` is a local proxy and `official_metrics.py` an official-style reconstruction. Neither is an official challenge score. Decisions are taken on the official-style scorer, because the proxy was misleading in items 4 and 5.
 
 ## Pipeline
@@ -49,6 +55,12 @@ python train.py --out OUT/smp_r34_s42 --seed 42 --arch smp --encoder resnet34 --
 python score_official.py --checkpoint OUT/base_s42/best.pt OUT/base_s123/best.pt OUT/base_s456/best.pt --window hann --overlap 128 --tta --groups base3=0,1,2 --out OUT/ens --pairs-csv PAIRS_EXCLUDED
 python defocus_eval.py --checkpoint OUT/base_s42/best.pt --manifest data_manifest_full.csv --pairs-csv PAIRS_EXCLUDED --out OUT/defocus
 python time_inference.py --checkpoint OUT/base_s42/best.pt OUT/base_s123/best.pt OUT/base_s456/best.pt --tta 1 4 8
+python modality_report.py --score-dir OUT/ens/base3
+python postprocess.py --checkpoint OUT/base_s42/best.pt OUT/base_s123/best.pt OUT/base_s456/best.pt --tta --out OUT/postprocess --pairs-csv PAIRS_EXCLUDED
+python ssl_pretrain.py --manifest data_manifest_full.csv --out OUT/ssl_r34 --encoder resnet34 --steps 10000 --resume
+python train.py --out OUT/ssl_r34_s42 --seed 42 --arch smp --encoder resnet34 --ssl-checkpoint OUT/ssl_r34/ssl_encoder.pt --select-on heldout --prepared-dir /content/prepared --pairs-csv PAIRS_EXCLUDED --resume
+python bm3d_input.py time --size 2048
+python example_grid.py --ref OUT/base_s42/per_image_scores.csv --run base=OUT/base_s42/best.pt smp=OUT/smp_r34_s42/best.pt --out OUT/grids
 
 # single image
 python infer.py --checkpoint best.pt --input IMAGE.tif --out PRED.ome.tiff
@@ -73,6 +85,11 @@ python infer.py --checkpoint best.pt --input IMAGE.tif --out PRED.ome.tiff
 | `evaluate.py` | Local proxy metrics (SSIM, PCC) |
 | `official_metrics.py`, `score_official.py` | Official-style metrics, rescoring of checkpoints, ensembles and member groups, with TTA |
 | `defocus_eval.py` | Sensitivity of a model to the focal plane of the input |
+| `postprocess.py` | Per-organelle post-processing (TV, background offset, gamma), its sweep and selection |
+| `ssl_pretrain.py` | Masked-image pretraining of the encoder on transmitted-light slices of the training split |
+| `bm3d_input.py` | BM3D-denoised input channel: timing and build for the prepared folder |
+| `modality_report.py` | Official-style scores per transmitted-light modality |
+| `example_grid.py` | Fixed example set (median per modality, lowest per organelle) for any runs |
 | `time_inference.py` | Run time and memory of the container prediction for an ensemble and TTA setting |
 | `baseline_constant.py` | Constant control (training-set mean per organelle) |
 | `eval_last.py`, `aggregate_w3.py`, `w3_inspect.py` | Week 3 analysis: last epoch, aggregation over seeds, scores by modality and study |

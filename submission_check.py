@@ -1,6 +1,8 @@
 """Checks for the Grand Challenge container (inference.py), used locally and in CI.
 
-  python submission_check.py make-inputs INPUT_ROOT MODEL_DIR   synthetic OME-TIFF inputs and random-weight checkpoint
+  python submission_check.py make-inputs INPUT_ROOT MODEL_DIR [PLAN_MODEL_DIR]
+      synthetic OME-TIFF inputs and two random-weight U-Net checkpoints. PLAN_MODEL_DIR also gets a random U-Net, a
+      random pretrained-encoder U-Net (smp, no download), members.json and postprocess.json, to test those code paths
   python submission_check.py check-outputs INPUT_ROOT OUTPUT_ROOT  verify the four outputs per input, then panimg
 
 The synthetic inputs test the file contract only (names, folders, shape, dtype, OME-XML, panimg readability).
@@ -23,7 +25,7 @@ CASES = [("case_bf_uint16.ome.tiff", "BF", np.uint16, (700, 950)),
          ("case_pc_uint16_small.ome.tiff", "PC", np.uint16, (300, 401))]
 
 
-def make_inputs(input_root, model_dir):
+def make_inputs(input_root, model_dir, plan_dir=None):
     d = Path(input_root) / INPUT_SUB
     d.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(0)
@@ -42,6 +44,21 @@ def make_inputs(input_root, model_dir):
                     "cfg": {"base_channels": 32, "modality_mode": "none"}},
                    Path(model_dir) / f"random_weights_for_ci_{seed}.pt")
     print(f"wrote {len(CASES)} inputs to {d} and two random-weight checkpoints to {model_dir}")
+    if plan_dir:
+        import json
+        from unet import SmpUNet
+        p = Path(plan_dir)
+        p.mkdir(parents=True, exist_ok=True)
+        torch.manual_seed(0)
+        torch.save({"model": UNet(base=32, n_mod=0).state_dict(), "epoch": 0,
+                    "cfg": {"base_channels": 32, "modality_mode": "none"}}, p / "unet_random.pt")
+        torch.save({"model": SmpUNet("resnet18", None).state_dict(), "epoch": 0,
+                    "cfg": {"arch": "smp", "encoder_name": "resnet18", "encoder_weights": "imagenet",
+                            "modality_mode": "none"}}, p / "smp_random.pt")
+        json.dump({"Nucleus": ["unet_random.pt"], "Tubulin": ["unet_random.pt", "smp_random.pt"]},
+                  open(p / "members.json", "w"))
+        json.dump({"Tubulin": {"tv": 0.03}, "Actin": {"offset": 0.05, "gamma": 1.25}}, open(p / "postprocess.json", "w"))
+        print(f"wrote a U-Net, a pretrained-encoder U-Net, members.json and postprocess.json to {plan_dir}")
 
 
 def run_panimg(output_root, previews):
@@ -113,7 +130,7 @@ def check_outputs(input_root, output_root):
 if __name__ == "__main__":
     cmd = sys.argv[1]
     if cmd == "make-inputs":
-        make_inputs(sys.argv[2], sys.argv[3])
+        make_inputs(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else None)
     elif cmd == "check-outputs":
         sys.exit(check_outputs(sys.argv[2], sys.argv[3]))
     else:

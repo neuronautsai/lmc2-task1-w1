@@ -108,27 +108,48 @@ class LMC2Dataset(Dataset):
         k = int(self.rng.integers(0, 4))
         return np.rot90(x, k, axes=(1, 2)).copy(), np.rot90(y, k, axes=(1, 2)).copy()
 
-    def _augment_prepared(self, arr):
-        """Same random draws as _augment, but only the crop is read from the memory-mapped array."""
+    def _augment_prepared(self, arr, extra=None):
+        """Same random draws as _augment, but only the crop is read from the memory-mapped array. extra: optional
+        (H, W) extra input channel (BM3D), cropped and transformed together with the input."""
         size = self.cfg.patch_size
         h, w = arr.shape[-2:]
         if h < size or w < size:
-            return self._augment(arr[:1].astype(np.float32), arr[1:].astype(np.float32))
+            x = arr[:1].astype(np.float32)
+            if extra is not None:
+                x = np.concatenate([x, np.asarray(extra, dtype=np.float32)[None]])
+            return self._augment(x, arr[1:].astype(np.float32))
         i = int(self.rng.integers(0, h - size + 1))
         j = int(self.rng.integers(0, w - size + 1))
         crop = np.asarray(arr[:, i:i + size, j:j + size], dtype=np.float32)
-        return self._flip_rotate(crop[:1], crop[1:])
+        x = crop[:1]
+        if extra is not None:
+            x = np.concatenate([x, np.asarray(extra[i:i + size, j:j + size], dtype=np.float32)[None]])
+        return self._flip_rotate(x, crop[1:])
+
+    def _extra(self, stem):
+        if not self.cfg.extra_input:
+            return None
+        if self.cfg.extra_input_dir is None:
+            raise ValueError("extra_input needs extra_input_dir (bm3d_input.py build)")
+        f = self.cfg.extra_input_dir / f"{stem}_{self.cfg.extra_input}.npy"
+        if not f.exists():
+            raise FileNotFoundError(f"{f} missing, run bm3d_input.py build for every prepared image")
+        return np.load(f, mmap_mode="r")
 
     def _prepared_item(self, r):
-        arr = np.load(self.pdir / f"{int(r.study):02d}_{int(r.image_id):05d}.npy", mmap_mode="r")
+        stem = f"{int(r.study):02d}_{int(r.image_id):05d}"
+        arr = np.load(self.pdir / f"{stem}.npy", mmap_mode="r")
         assert arr.ndim == 3 and arr.shape[0] == 1 + len(ORGANELLES), f"bad prepared array {arr.shape}"
+        extra = self._extra(stem)
         observed = np.array([bool(r[f"{o}_obs"]) for o in ORGANELLES])
         if self.train:
-            crops = [self._augment_prepared(arr) for _ in range(self.cfg.crops_per_image)]
+            crops = [self._augment_prepared(arr, extra) for _ in range(self.cfg.crops_per_image)]
             x = np.stack([c[0] for c in crops])
             y = np.stack([c[1] for c in crops])
         else:
             x, y = arr[:1].astype(np.float32), arr[1:].astype(np.float32)
+            if extra is not None:
+                x = np.concatenate([x, np.asarray(extra, dtype=np.float32)[None]])
         return x, y, observed
 
     def __getitem__(self, idx):
@@ -144,6 +165,8 @@ class LMC2Dataset(Dataset):
                 "modality": r.modality,
                 "modality_id": modality_id(r.modality),
             }
+        if self.train and self.cfg.extra_input:
+            raise ValueError("extra_input training needs the prepared dataset (--prepared-dir) and bm3d_input.py build")
         x = self._read(int(r.study), r.in_file)[None]
         y = np.zeros((len(ORGANELLES),) + x.shape[1:], dtype=np.float32)
         observed = np.zeros(len(ORGANELLES), dtype=bool)
@@ -166,3 +189,19 @@ class LMC2Dataset(Dataset):
             "modality": r.modality,
             "modality_id": modality_id(r.modality),
         }
+
+
+def eval_dataset(cfg, split="val", heldout_json=None):
+    """Full-image evaluation dataset. split "val" is the local validation split, "heldout" the training studies listed
+    in a run's heldout_studies.json (written by train.py --select-on heldout), for choices that must not look at the
+    reported validation images."""
+    if split == "val":
+        return LMC2Dataset(cfg, "val", train=False)
+    if split != "heldout" or not heldout_json:
+        raise ValueError("split must be val, or heldout with heldout_json")
+    studies = {int(s) for s in json.load(open(heldout_json))["studies"]}
+    ds = LMC2Dataset(cfg, "train", train=False)
+    ds.df = ds.df[ds.df.study.isin(studies)].reset_index(drop=True)
+    if not len(ds.df):
+        raise ValueError(f"no training images in the held-out studies {sorted(studies)}")
+    return ds

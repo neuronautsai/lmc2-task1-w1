@@ -59,6 +59,9 @@ class ChallengeConfig:
     # "heldout": official-style mean of macro SSIM and PCC on held-out training studies (item 5)
     heldout_frac: float = 0.1  # share of training groups held out for checkpoint selection (GroupShuffleSplit, seed 42)
     ema_decay: float = 0.0  # > 0 keeps an exponential moving average of the weights, used for selection and saving (item 6)
+    ssl_checkpoint: str = ""  # ssl_encoder.pt from ssl_pretrain.py, loaded into the smp encoder before training (Run B)
+    extra_input: str = ""  # "bm3d": a BM3D-denoised copy of the input as a second input channel (item 11)
+    extra_input_dir: Path | None = None  # folder of <prepared stem>_bm3d.npy written by bm3d_input.py build
 
 
 def declared_rule(cfg):

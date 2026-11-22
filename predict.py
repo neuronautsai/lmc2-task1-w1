@@ -39,10 +39,33 @@ def _window(n, overlap, kind="linear"):
     return np.maximum(w / w.max(), 1e-3).astype(np.float32)
 
 
+_EXTRA_CACHE = {}
+
+
+def with_extra_input(model, x):
+    """Add the model's extra input channel (BM3D of the normalized input, item 11) to a 1-channel input. The last
+    result is cached, so an ensemble or TTA computes it once per image."""
+    need = int(getattr(model, "in_ch", 1))
+    if x.shape[1] >= need:
+        return x
+    kind = getattr(model, "extra_input", "")
+    if kind != "bm3d":
+        raise ValueError(f"model needs {need} input channels, got {x.shape[1]} and extra_input {kind!r}")
+    key = (x.data_ptr(), tuple(x.shape), x.device.type)
+    if key not in _EXTRA_CACHE:
+        from bm3d_input import bm3d_denoise
+        _EXTRA_CACHE.clear()
+        d = bm3d_denoise(x[0, 0].float().cpu().numpy())
+        _EXTRA_CACHE[key] = torch.from_numpy(d)[None, None].to(x.device, x.dtype)
+    return torch.cat([x, _EXTRA_CACHE[key]], dim=1)
+
+
 @torch.no_grad()
 def predict_full(model, x, tile=512, overlap=64, factor=16, mod=None, window="linear"):
-    """x: (1, 1, H, W) tensor on the model device, mod: optional modality id (int) for a conditioned model.
+    """x: (1, C, H, W) tensor on the model device (C = 1, or 2 for a model with an extra input channel, which is added
+    here when missing), mod: optional modality id (int) for a conditioned model.
     window: tile blending weight, see _window. Returns (4, H, W) float32 numpy array (the network output)."""
+    x = with_extra_input(model, x)
     mod_t = None if mod is None else torch.tensor([int(mod)], dtype=torch.long, device=x.device)
     factor = max(factor, int(getattr(model, "factor", factor)))  # 32 for the pretrained-encoder U-Net
     _, _, h, w = x.shape
@@ -83,6 +106,7 @@ def predict_tta(model, x, tile=512, overlap=64, mod=None, window="linear", n_tta
     """predict_full averaged over the TTA_TRANSFORMS[n_tta] variants of the input, each mapped back before averaging."""
     if n_tta not in TTA_TRANSFORMS:
         raise ValueError(f"n_tta must be one of {sorted(TTA_TRANSFORMS)}, got {n_tta}")
+    x = with_extra_input(model, x)  # computed once, then transformed with the input
     acc = None
     for k, flip in TTA_TRANSFORMS[n_tta]:
         xt = torch.rot90(x, k, dims=(2, 3))
