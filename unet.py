@@ -125,3 +125,22 @@ def unet_from_checkpoint(ck, device, n_mod_values=4):
     model = build_model(ck["cfg"], n_mod_values, pretrained=False)
     model.load_state_dict(ck["model"])
     return model.to(device).eval()
+
+
+def load_any_checkpoint(path, device):
+    """Unconditioned model from any checkpoint of this repo, for inference: a train.py checkpoint with its cfg (U-Net or
+    pretrained-encoder U-Net, built without downloading weights) or a bare state_dict of the Week 2 U-Net."""
+    ck = torch.load(path, map_location=device, weights_only=False)
+    if isinstance(ck, dict) and "model" in ck and "cfg" in ck:
+        if ck["cfg"].get("modality_mode", "none") != "none":
+            raise ValueError("this entry point serves unconditioned models only")
+        ck["model"] = {k: v.float() for k, v in ck["model"].items()}
+        model = unet_from_checkpoint(ck, device)
+    else:
+        state = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
+        model = UNet(base=32, n_mod=0).to(device)
+        model.load_state_dict({k: v.float() for k, v in state.items()})
+        model.eval()
+    print(f"weights {path} | epoch {ck.get('epoch') if isinstance(ck, dict) else 'n/a'} | "
+          f"{type(model).__name__} | device {device}", flush=True)
+    return model

@@ -3,7 +3,7 @@
 Runs the same code path as inference.py (normalization, Hann tiling, TTA, ensemble mean, uint8 conversion) on one
 synthetic uint16 image of --size x --size pixels and reports seconds per case for every TTA setting asked for, plus the
 peak GPU memory and the process peak RAM. Weights: the given checkpoints, else --n-models random-weight U-Nets (the
-run time does not depend on the weight values). Checkpoints load through inference.load_model, so U-Net and
+run time does not depend on the weight values). Checkpoints load through unet.load_any_checkpoint (as in the container), so U-Net and
 pretrained-encoder U-Net checkpoints can be mixed. --random-arch smp times random-weight pretrained-encoder U-Nets.
 
 Usage:
@@ -22,8 +22,7 @@ import torch
 from config import ChallengeConfig
 from dataset import normalize
 from predict import predict_tta
-from inference import load_model
-from unet import SmpUNet, UNet
+from unet import SmpUNet, UNet, load_any_checkpoint
 
 
 def main():
@@ -43,7 +42,7 @@ def main():
     device = torch.device(a.device)
     models = []
     if a.checkpoint:
-        models = [load_model(c, device).eval() for c in a.checkpoint]
+        models = [load_any_checkpoint(c, device).eval() for c in a.checkpoint]
     else:
         for seed in range(a.n_models):
             torch.manual_seed(seed)

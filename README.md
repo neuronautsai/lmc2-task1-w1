@@ -90,6 +90,7 @@ python infer.py --checkpoint best.pt --input IMAGE.tif --out PRED.ome.tiff
 | `bm3d_input.py` | BM3D-denoised input channel: timing and build for the prepared folder |
 | `modality_report.py` | Official-style scores per transmitted-light modality |
 | `example_grid.py` | Fixed example set (median per modality, lowest per organelle) for any runs |
+| `notebooks/` | Colab notebooks of the #333 runs: step 1 (trainings, defocus), step 2 (scores, member groups, post-processing), T4 timing |
 | `time_inference.py` | Run time and memory of the container prediction for an ensemble and TTA setting |
 | `baseline_constant.py` | Constant control (training-set mean per organelle) |
 | `eval_last.py`, `aggregate_w3.py`, `w3_inspect.py` | Week 3 analysis: last epoch, aggregation over seeds, scores by modality and study |

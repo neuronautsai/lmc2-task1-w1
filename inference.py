@@ -47,7 +47,7 @@ from dataset import normalize
 from ome_utils import OUTPUT_TYPES, ome_with_type
 from postprocess import apply_all, check_plan
 from predict import TTA_TRANSFORMS, WINDOWS, predict_tta
-from unet import UNet, unet_from_checkpoint
+from unet import load_any_checkpoint
 
 INPUT_DIR = Path(os.environ.get("LMC2_INPUT", "/input")) / "images" / "organelles-transmitted-light-ome-tiff"
 OUTPUT_ROOT = Path(os.environ.get("LMC2_OUTPUT", "/output")) / "images"
@@ -107,20 +107,7 @@ def focus_info(ome, x):
 
 
 def load_model(path, device):
-    ck = torch.load(path, map_location=device, weights_only=False)
-    if isinstance(ck, dict) and "model" in ck and "cfg" in ck:
-        if ck["cfg"].get("modality_mode", "none") != "none":
-            raise ValueError("this entry point serves unconditioned models only")
-        ck["model"] = {k: v.float() for k, v in ck["model"].items()}
-        model = unet_from_checkpoint(ck, device)  # U-Net or pretrained-encoder U-Net, never downloads weights
-    else:  # bare state_dict of the Week 2 U-Net
-        state = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
-        model = UNet(base=32, n_mod=0).to(device)
-        model.load_state_dict({k: v.float() for k, v in state.items()})
-        model.eval()
-    print(f"weights {path} | epoch {ck.get('epoch') if isinstance(ck, dict) else 'n/a'} | "
-          f"{type(model).__name__} | device {device}", flush=True)
-    return model
+    return load_any_checkpoint(path, device)
 
 
 def predict_ensemble(models, x, cfg, members=None):
