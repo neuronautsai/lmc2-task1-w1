@@ -6,6 +6,7 @@ Markdown copies of the result comments posted on the follow-up task issue (itu-b
 |---|---|---|
 | 1 | [01_item7_ensemble_tta.md](01_item7_ensemble_tta.md) | Item 7: ensemble of the three base seeds with test-time augmentation |
 | 2 | [02_status_all_items.md](02_status_all_items.md) | Status of every item, with the earlier Week 1 results collected in one place |
+| 3 | [03_week2_encoder_ensemble.md](03_week2_encoder_ensemble.md) | Week 2: pretrained encoder, held-out selection, ensemble with TTA, member groups, modality, post-processing, focal plane |
 
 Week 1 work of this task that was posted on #323 before the move to #333 (collected in comment 2):
 
