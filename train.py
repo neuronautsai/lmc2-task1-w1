@@ -166,7 +166,13 @@ def versions():
     v = {"python": platform.python_version(), "torch": torch.__version__, "numpy": np.__version__,
          "scikit-image": skimage.__version__, "scipy": scipy.__version__, "pandas": pd.__version__,
          "cuda": torch.version.cuda, "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
-         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None}
+         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+         "cpu_count": os.cpu_count()}
+    try:
+        import segmentation_models_pytorch as smp
+        v["segmentation_models_pytorch"] = smp.__version__
+    except ImportError:
+        pass
     return v
 
 
